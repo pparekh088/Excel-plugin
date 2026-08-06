@@ -22,3 +22,7 @@ __pycache__/
 
 # Office add-in dev certs (generated per machine)
 certs/
+
+# Redis runtime artifacts — never belong in source
+*.rdb
+dump.rdb

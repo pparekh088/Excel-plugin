@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings, get_settings
-from .llm import CostMeter, build_gateway
+from .llm import build_gateway
 from .routers import agent, ai, health, sessions, tools
 from .schema_registry import ToolRegistry
 from .sessions import build_session_store
@@ -32,7 +32,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # multi-worker (tracked in PROGRESS).
         app.state.cost_meters = {}
         app.state.change_sets = {}
-        app.state.ai_cost_meter = CostMeter()
+        # AI cost meters keyed by (principal, session) — never process-global.
+        app.state.ai_cost_meters = {}
         yield
 
     app = FastAPI(title="Ledger Agent API", version="0.0.1", lifespan=lifespan)

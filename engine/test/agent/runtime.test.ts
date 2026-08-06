@@ -160,7 +160,7 @@ describe("agent runtime loop", () => {
     const workbook = baseWorkbook();
     Simulator.of(workbook).recalculate();
     const provider = new MockLlmProvider().script(
-      "INTENT",
+      "The user's request",
       planJson(
         [
           {
@@ -190,25 +190,30 @@ describe("agent runtime loop", () => {
 
   it("sends the WIL, never a raw grid, to the planner (INV-6)", async () => {
     const { workbook } = threeStatementModel();
-    const provider = new MockLlmProvider().script("INTENT", planJson([{ tool: "audit.run", params: {} }]));
+    const provider = new MockLlmProvider().script("The user's request", planJson([{ tool: "audit.run", params: {} }]));
     await runAgent(workbook, {
       intent: "look at it",
       provider,
       approver: approveAll,
       executor: createDefaultExecutor(),
     });
-    const prompt = provider.requests[0]!.messages.map((m) => m.content).join("\n");
-    expect(prompt).toContain("WORKBOOK SUMMARY");
-    expect(prompt).toContain("SHEET Assumptions");
+    const request = provider.requests[0]!;
+    const system = request.messages.filter((m) => m.role === "system").map((m) => m.content).join("\n");
+    const userTurns = request.messages.filter((m) => m.role === "user").map((m) => m.content).join("\n");
+
+    // Workbook content goes in a fenced USER turn, never the system role.
+    expect(userTurns).toContain("SHEET Assumptions");
+    expect(system).not.toContain("SHEET Assumptions");
+    expect(userTurns).toContain("<workbook_context>");
     // A raw grid dump would contain long runs of comma-separated numbers.
-    expect(prompt).not.toMatch(/(\d+,){20}/);
+    expect(userTurns).not.toMatch(/(\d+,){20}/);
   });
 
   it("stops when the user rejects the plan, changing nothing", async () => {
     const workbook = baseWorkbook();
     const before = JSON.stringify([...workbook.sheet("S")!.cells.entries()]);
     const provider = new MockLlmProvider().script(
-      "INTENT",
+      "The user's request",
       planJson([{ tool: "formula.set", params: { sheet: "S", a1: "C1", formula: "=B1+1" } }])
     );
     const result = await runAgent(workbook, {
@@ -224,7 +229,7 @@ describe("agent runtime loop", () => {
   it("aborts before writing when the workbook drifted (INV-8)", async () => {
     const workbook = baseWorkbook();
     const provider = new MockLlmProvider().script(
-      "INTENT",
+      "The user's request",
       planJson([{ tool: "formula.set", params: { sheet: "S", a1: "B1", formula: "=A1*5" } }])
     );
 
@@ -256,7 +261,7 @@ describe("agent runtime loop", () => {
   it("auto-approves a low-risk plan in a trusted session", async () => {
     const workbook = baseWorkbook();
     const provider = new MockLlmProvider().script(
-      "INTENT",
+      "The user's request",
       planJson([
         { tool: "number_format.set", params: { sheet: "S", a1: "A1:A3", format: "0.00" } },
       ])
@@ -276,7 +281,7 @@ describe("agent runtime loop", () => {
   it("still asks for approval on a HIGH-risk plan in a trusted session", async () => {
     const workbook = baseWorkbook();
     const provider = new MockLlmProvider().script(
-      "INTENT",
+      "The user's request",
       planJson([{ tool: "range.clear", params: { sheet: "S", a1: "B1" } }])
     );
     const approver = vi.fn(approveAll);
@@ -291,7 +296,7 @@ describe("agent runtime loop", () => {
   });
 
   it("reports a plan failure instead of guessing", async () => {
-    const provider = new MockLlmProvider().script("INTENT", "no json here");
+    const provider = new MockLlmProvider().script("The user's request", "no json here");
     const result = await runAgent(baseWorkbook(), {
       intent: "do something",
       provider,
@@ -303,7 +308,7 @@ describe("agent runtime loop", () => {
 
   it("refuses an unknown tool emitted by the model", async () => {
     const provider = new MockLlmProvider().script(
-      "INTENT",
+      "The user's request",
       planJson([{ tool: "shell.exec", params: { cmd: "rm -rf /" } }])
     );
     const result = await runAgent(baseWorkbook(), {
@@ -324,7 +329,7 @@ describe("agent runtime loop", () => {
     // divides by an empty cell, producing #DIV/0! in the blast radius.
     const provider = new MockLlmProvider()
       .script(
-        "INTENT",
+        "The user's request",
         planJson([{ tool: "formula.set", params: { sheet: "S", a1: "C1", formula: "=B1/Z9" } }])
       )
       .script(
@@ -354,7 +359,7 @@ describe("agent runtime loop", () => {
       { tool: "formula.set", params: { sheet: "S", a1: "B1", formula: "=B1/Z9" } },
     ]);
     const provider = new MockLlmProvider()
-      .script("INTENT", broken)
+      .script("The user's request", broken)
       .script("verification failed", broken);
 
     const result = await runAgent(workbook, {
@@ -378,7 +383,7 @@ describe("agent runtime loop", () => {
     const broken = planJson([
       { tool: "formula.set", params: { sheet: "S", a1: "C1", formula: "=1/Z9" } },
     ]);
-    const provider = new MockLlmProvider().script("INTENT", broken).script("verification failed", broken);
+    const provider = new MockLlmProvider().script("The user's request", broken).script("verification failed", broken);
 
     let calls = 0;
     const approver = async () => {
@@ -402,7 +407,7 @@ describe("agent runtime loop", () => {
     const workbook = baseWorkbook();
     workbook.sheet("S")!.protectedSheet = true;
     const provider = new MockLlmProvider().script(
-      "INTENT",
+      "The user's request",
       planJson([{ tool: "formula.set", params: { sheet: "S", a1: "C1", formula: "=B1+1" } }])
     );
     const result = await runAgent(workbook, {
@@ -421,7 +426,7 @@ describe("agent runtime loop", () => {
     const workbook = baseWorkbook();
     workbook.sheet("S")!.merged = [[0, 2, 0, 5]];
     const provider = new MockLlmProvider().script(
-      "INTENT",
+      "The user's request",
       planJson([{ tool: "formula.set", params: { sheet: "S", a1: "D1", formula: "=B1+1" } }])
     );
     const result = await runAgent(workbook, {
@@ -435,7 +440,7 @@ describe("agent runtime loop", () => {
   });
 
   it("reports a no-op when the plan produces no edits", async () => {
-    const provider = new MockLlmProvider().script("INTENT", planJson([{ tool: "audit.run", params: {} }]));
+    const provider = new MockLlmProvider().script("The user's request", planJson([{ tool: "audit.run", params: {} }]));
     const result = await runAgent(baseWorkbook(), {
       intent: "just audit",
       provider,
@@ -448,7 +453,7 @@ describe("agent runtime loop", () => {
   it("meters cost across the whole run", async () => {
     const meter = new CostMeter();
     const provider = new MockLlmProvider().script(
-      "INTENT",
+      "The user's request",
       planJson([{ tool: "formula.set", params: { sheet: "S", a1: "C1", formula: "=B1+1" } }])
     );
     const result = await runAgent(baseWorkbook(), {
@@ -468,7 +473,7 @@ describe("agent runtime loop", () => {
     // Breaking equity breaks the tie-out, which the verifier must catch.
     const provider = new MockLlmProvider()
       .script(
-        "INTENT",
+        "The user's request",
         planJson([
           { tool: "formula.set", params: { sheet: "BS", a1: "C7", formula: "=B7+IS!C10+5000" } },
         ])

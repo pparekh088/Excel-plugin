@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "schemas": "tsx scripts/export-schemas.ts",
+    "catalogue": "tsx scripts/export-catalogue.ts",
     "corpus": "tsx scripts/generate-corpus.ts",
     "eval:audit": "tsx scripts/eval-audit.ts",
     "eval:edit": "tsx scripts/eval-edit.ts",

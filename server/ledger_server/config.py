@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     # Entra ID settings (required when auth_mode == "entra").
     entra_tenant_id: str = ""
     entra_client_id: str = ""  # the API's app registration (audience)
+    # Single-tenant by default: a token from another tenant is rejected even
+    # though it validated against this tenant's JWKS. Opt in deliberately.
+    entra_allow_multi_tenant: bool = False
 
     # Empty -> in-memory session store (single-process dev only).
     redis_url: str = ""

@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..auth import CurrentPrincipal
 from ..llm import CompletionRequest, CostMeter
 from ..models import new_id
+from ..prompts import build_messages, build_system_prompt
 from .sessions import load_session_or_404
 
 router = APIRouter(prefix="/api/v1/sessions/{session_id}/agent", tags=["agent"])
@@ -29,11 +30,20 @@ class StrictModel(BaseModel):
 
 
 class PlanRequest(StrictModel):
+    """A planning request.
+
+    Note what is NOT here: the tool catalogue and the system prompt. Both are
+    instruction content — they tell the model what it is and what it may do —
+    so both are owned by the server (see prompts.py). A client that could
+    supply either could grant itself tools or rewrite its own guardrails.
+
+    `wil` is workbook-derived and therefore UNTRUSTED. It is fenced and placed
+    in a user turn, never in the system role. The server still never sees raw
+    grids (INV-6); the add-in sends only the summary.
+    """
+
     intent: str = Field(min_length=1, max_length=4000)
-    # The add-in builds the WIL and sends it; the server never sees raw grids
-    # (INV-6) and never needs the workbook itself.
     wil: str = Field(min_length=1, max_length=200_000)
-    tool_catalogue: str = Field(min_length=1, max_length=200_000)
     role: Literal["planner", "executor", "critic", "classifier"] = "planner"
 
 
@@ -70,7 +80,8 @@ class ChangeSetAck(BaseModel):
 
 class CostResponse(BaseModel):
     total_cost_usd: float
-    by_tier: dict[str, Any]
+    total_calls: int
+    by_model: dict[str, Any]
 
 
 def _meter_for(session_id: str, request: Request) -> CostMeter:
@@ -94,16 +105,16 @@ async def plan(
     completion = await gateway.complete(
         CompletionRequest(
             role=body.role,
-            # Catalogue and WIL are stable within a session, so they go in the
-            # cacheable system block rather than the per-turn messages.
-            system=f"{body.tool_catalogue}\n\nWORKBOOK SUMMARY\n{body.wil}",
-            messages=[{"role": "user", "content": f"INTENT\n{body.intent}"}],
+            # System = immutable policy + server-owned catalogue. Stable within
+            # a session, so it is also what benefits from prompt caching.
+            system=build_system_prompt(),
+            # Workbook content is fenced and lands in a user turn, after which
+            # the user's actual intent is the most recent instruction.
+            messages=build_messages(body.wil, body.intent),
         ),
         meter,
     )
-    from ..llm import ROLE_TIERS
-
-    tier = ROLE_TIERS[body.role]
+    tier = gateway.route(body.role).tier
     return PlanResponse(
         text=completion.text,
         model=completion.usage.model,
@@ -167,7 +178,8 @@ async def cost(request: Request, session_id: str, principal: CurrentPrincipal) -
     snapshot = _meter_for(session_id, request).snapshot()
     return CostResponse(
         total_cost_usd=snapshot["totalCostUsd"],  # type: ignore[arg-type]
-        by_tier=snapshot["byTier"],  # type: ignore[arg-type]
+        total_calls=snapshot["totalCalls"],  # type: ignore[arg-type]
+        by_model=snapshot["byModel"],  # type: ignore[arg-type]
     )
 
 

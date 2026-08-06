@@ -13,6 +13,7 @@ registration requests an access token for this API's app registration
 (audience = api://<client-id> or the client id itself, both accepted).
 """
 
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Annotated
@@ -22,6 +23,8 @@ from fastapi import Depends, HTTPException, Request
 from jwt import PyJWKClient
 
 from .config import Settings, get_settings
+
+logger = logging.getLogger("ledger.auth")
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,32 @@ def _jwk_client(tenant_id: str) -> PyJWKClient:
     )
 
 
+def _issuers_for(tenant_id: str) -> list[str]:
+    """Accepted issuers for a single-tenant registration.
+
+    v2.0 tokens carry the `/v2.0` suffix; v1.0 tokens do not. Both are legal
+    depending on the app registration's `accessTokenAcceptedVersion`.
+    """
+    return [
+        f"https://login.microsoftonline.com/{tenant_id}/v2.0",
+        f"https://sts.windows.net/{tenant_id}/",
+    ]
+
+
+def _reject(reason: str) -> HTTPException:
+    """A generic 401 for the client; the reason is logged, not returned.
+
+    Validation details ("signature verification failed", "audience mismatch",
+    the raw PyJWT message) tell an attacker which knob to turn next. The client
+    gets one opaque code; operators get the detail in the log.
+    """
+    logger.warning("Rejected access token: %s", reason)
+    return HTTPException(
+        status_code=401,
+        detail={"code": "invalid_token", "message": "The access token is invalid."},
+    )
+
+
 def _validate_entra_token(token: str, settings: Settings) -> Principal:
     if not settings.entra_tenant_id or not settings.entra_client_id:
         raise HTTPException(
@@ -57,13 +86,24 @@ def _validate_entra_token(token: str, settings: Settings) -> Principal:
             signing_key.key,
             algorithms=["RS256"],
             audience=[settings.entra_client_id, f"api://{settings.entra_client_id}"],
-            options={"require": ["exp", "aud", "sub"]},
+            issuer=_issuers_for(settings.entra_tenant_id),
+            options={"require": ["exp", "aud", "sub", "iss"], "verify_iss": True},
         )
     except jwt.PyJWTError as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
+        raise _reject(f"{type(exc).__name__}: {exc}") from exc
+
+    # The signing key already binds the token to this tenant's JWKS, but an
+    # explicit tid check is what makes single-tenant intent unambiguous — and
+    # an authenticated enterprise principal must never carry an empty tenant.
+    tenant = claims.get("tid", "")
+    if not tenant:
+        raise _reject("token has no 'tid' claim")
+    if not settings.entra_allow_multi_tenant and tenant != settings.entra_tenant_id:
+        raise _reject(f"tenant {tenant} is not the configured tenant")
+
     return Principal(
         subject=claims["sub"],
-        tenant_id=claims.get("tid", ""),
+        tenant_id=tenant,
         name=claims.get("name", claims.get("preferred_username", "")),
     )
 

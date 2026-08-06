@@ -19,7 +19,6 @@ def test_plan_routes_through_the_gateway_and_meters_cost(client, session_id):
         json={
             "intent": "Change growth to 5.2%",
             "wil": "WORKBOOK Test\nSHEET Assumptions",
-            "tool_catalogue": "## mutation tools\n- range.write",
         },
     )
     assert response.status_code == 200
@@ -33,15 +32,15 @@ def test_plan_routes_through_the_gateway_and_meters_cost(client, session_id):
 def test_planner_role_routes_to_strong_executor_to_fast(client, session_id):
     strong = client.post(
         f"/api/v1/sessions/{session_id}/agent/plan",
-        json={"intent": "x", "wil": "w", "tool_catalogue": "c", "role": "planner"},
+        json={"intent": "x", "wil": "w", "role": "planner"},
     ).json()
     fast = client.post(
         f"/api/v1/sessions/{session_id}/agent/plan",
-        json={"intent": "x", "wil": "w", "tool_catalogue": "c", "role": "executor"},
+        json={"intent": "x", "wil": "w", "role": "executor"},
     ).json()
     cheap = client.post(
         f"/api/v1/sessions/{session_id}/agent/plan",
-        json={"intent": "x", "wil": "w", "tool_catalogue": "c", "role": "classifier"},
+        json={"intent": "x", "wil": "w", "role": "classifier"},
     ).json()
     assert strong["tier"] == "strong"
     assert fast["tier"] == "fast"
@@ -51,7 +50,7 @@ def test_planner_role_routes_to_strong_executor_to_fast(client, session_id):
 def test_plan_rejects_unknown_fields(client, session_id):
     response = client.post(
         f"/api/v1/sessions/{session_id}/agent/plan",
-        json={"intent": "x", "wil": "w", "tool_catalogue": "c", "workbook": "raw grid"},
+        json={"intent": "x", "wil": "w", "workbook": "raw grid"},
     )
     assert response.status_code == 422
 
@@ -59,7 +58,7 @@ def test_plan_rejects_unknown_fields(client, session_id):
 def test_plan_requires_an_intent(client, session_id):
     response = client.post(
         f"/api/v1/sessions/{session_id}/agent/plan",
-        json={"intent": "", "wil": "w", "tool_catalogue": "c"},
+        json={"intent": "", "wil": "w"},
     )
     assert response.status_code == 422
 
@@ -131,12 +130,15 @@ def test_cost_accumulates_across_calls(client, session_id):
     for _ in range(3):
         client.post(
             f"/api/v1/sessions/{session_id}/agent/plan",
-            json={"intent": "x", "wil": "w", "tool_catalogue": "c"},
+            json={"intent": "x", "wil": "w"},
         )
 
     after = client.get(f"/api/v1/sessions/{session_id}/agent/cost").json()
-    assert "strong" in after["by_tier"]
-    assert after["by_tier"]["strong"]["inputTokens"] > 0
+    # Keyed by provider/model now, and the call count is real rather than
+    # inferred from how many distinct tiers were touched.
+    assert after["total_calls"] == 3
+    assert len(after["by_model"]) >= 1
+    assert sum(entry["inputTokens"] for entry in after["by_model"].values()) > 0
 
 
 def test_agent_endpoints_are_scoped_to_the_session_owner(client):
