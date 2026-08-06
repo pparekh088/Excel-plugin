@@ -24,6 +24,7 @@ export * from "./audit/engine";
 
 export * from "./changeset/types";
 export * from "./changeset/engine";
+export * from "./changeset/structural";
 export * from "./changeset/hazards";
 
 export * from "./locale/normalize";

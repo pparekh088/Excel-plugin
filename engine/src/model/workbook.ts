@@ -86,7 +86,8 @@ export class Sheet {
   merged: Array<[number, number, number, number]> = [];
 
   constructor(
-    readonly name: string,
+    /** Mutable only so rollback can undo a rename (see Workbook.renameSheet). */
+    public name: string,
     readonly index: number
   ) {}
 
@@ -178,6 +179,76 @@ export class Workbook {
       if (scoped) return scoped;
     }
     return this.names.find((n) => n.name.toUpperCase() === target && n.scope === null);
+  }
+
+  /**
+   * Remove a sheet and everything scoped to it. Used by rollback to undo a
+   * sheet this agent created — never as an agent-facing operation, because
+   * deleting a sheet is not something a change set is allowed to propose.
+   */
+  removeSheet(name: string): boolean {
+    const index = this.sheetIndex(name);
+    if (index < 0) return false;
+    const target = this.sheets[index]!.name.toUpperCase();
+    this.sheets.splice(index, 1);
+    this.dropScopedTo(target);
+    return true;
+  }
+
+  /**
+   * Rename a sheet in the model. This does NOT rewrite the formulas that
+   * reference it — Excel does that itself on a real rename, and the simulator
+   * has no need to, since it never applies renames as a forward operation
+   * (see engine.ts). Kept narrow deliberately: a half-implemented rename that
+   * silently orphaned references would be worse than none.
+   */
+  renameSheet(from: string, to: string): boolean {
+    const sheet = this.sheet(from);
+    if (!sheet || this.sheet(to) !== undefined) return false;
+    const previous = sheet.name.toUpperCase();
+    sheet.name = to;
+    for (const name of this.names) {
+      if (name.scope !== null && name.scope.toUpperCase() === previous) name.scope = to;
+    }
+    for (const table of this.tables) {
+      if (table.sheet.toUpperCase() === previous) table.sheet = to;
+    }
+    return true;
+  }
+
+  removeName(name: string, scope: string | null = null): boolean {
+    const target = name.toUpperCase();
+    const index = this.names.findIndex(
+      (candidate) =>
+        candidate.name.toUpperCase() === target &&
+        (scope === null
+          ? candidate.scope === null
+          : candidate.scope !== null && candidate.scope.toUpperCase() === scope.toUpperCase())
+    );
+    if (index < 0) return false;
+    this.names.splice(index, 1);
+    return true;
+  }
+
+  removeTable(name: string): boolean {
+    const target = name.toUpperCase();
+    const index = this.tables.findIndex((table) => table.name.toUpperCase() === target);
+    if (index < 0) return false;
+    this.tables.splice(index, 1);
+    return true;
+  }
+
+  /** Drop names, tables, charts and pivots belonging to a removed sheet. */
+  private dropScopedTo(sheetUpper: string): void {
+    const drop = <T>(list: T[], belongs: (item: T) => boolean): void => {
+      for (let index = list.length - 1; index >= 0; index--) {
+        if (belongs(list[index]!)) list.splice(index, 1);
+      }
+    };
+    drop(this.names, (name) => name.scope !== null && name.scope.toUpperCase() === sheetUpper);
+    drop(this.tables, (table) => table.sheet.toUpperCase() === sheetUpper);
+    drop(this.charts, (chart) => chart.sheet.toUpperCase() === sheetUpper);
+    drop(this.pivots, (pivot) => pivot.sheet.toUpperCase() === sheetUpper);
   }
 
   get cellCount(): number {

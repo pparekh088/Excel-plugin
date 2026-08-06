@@ -28,6 +28,12 @@ interface FakeState {
   reads: Map<string, { value: unknown; formula?: string }>;
   /** Throw on the Nth write, to exercise the partial-failure path. */
   throwOnWrite?: number;
+  /** Sheets/names/tables the fake workbook currently holds (upper-cased). */
+  sheets: Set<string>;
+  names: Map<string, string>;
+  tables: Set<string>;
+  deletedSheets: string[];
+  renames: Array<[string, string]>;
 }
 
 const state: FakeState = {
@@ -36,6 +42,11 @@ const state: FakeState = {
   suspensions: 0,
   calculations: 0,
   reads: new Map(),
+  sheets: new Set(),
+  names: new Map(),
+  tables: new Set(),
+  deletedSheets: [],
+  renames: [],
 };
 
 function makeRange(sheet: string, row: number, col: number) {
@@ -92,35 +103,131 @@ function makeRange(sheet: string, row: number, col: number) {
   });
 }
 
+/**
+ * Sheets that exist in the fake workbook. Structural undo asks the host what
+ * is there, so the fake has to actually keep a registry rather than answering
+ * "not found" to everything.
+ */
+function sheetExists(name: string): boolean {
+  return state.sheets.has(name.toUpperCase());
+}
+
+/** Cells the fake holds on a sheet — stands in for the used range. */
+function cellsOn(name: string): string[] {
+  const prefix = `${name}!`;
+  return [...state.reads.entries()]
+    .filter(([key, cell]) => key.startsWith(prefix) && cell.value !== null && cell.value !== "")
+    .map(([key]) => key);
+}
+
 function makeSheet(name: string) {
-  return {
-    name,
+  const sheet: Record<string, unknown> = {
+    get name() {
+      return name;
+    },
+    set name(next: string) {
+      state.sheets.delete(name.toUpperCase());
+      state.sheets.add(next.toUpperCase());
+      state.renames.push([name, next]);
+    },
     getRangeByIndexes: (row: number, col: number) => makeRange(name, row, col),
-    getUsedRangeOrNullObject: () => ({
-      isNullObject: true,
-      load: vi.fn(),
-      rowIndex: 0,
-      rowCount: 0,
+    getUsedRangeOrNullObject: () => {
+      const cells = cellsOn(name);
+      return {
+        isNullObject: cells.length === 0,
+        address: cells.join(","),
+        load: vi.fn(),
+        rowIndex: 0,
+        rowCount: cells.length,
+      };
+    },
+    delete: vi.fn(() => {
+      state.sheets.delete(name.toUpperCase());
+      state.deletedSheets.push(name);
     }),
     activate: vi.fn(),
     protection: { protected: false, load: vi.fn() },
   };
+  return sheet as typeof sheet & { isNullObject: boolean };
 }
 
 function installOfficeFake(): void {
   const worksheets = {
     getItem: (name: string) => makeSheet(name),
-    getItemOrNullObject: (name: string) => ({ ...makeSheet(name), isNullObject: true, load: vi.fn() }),
-    add: vi.fn((name: string) => makeSheet(name)),
+    getItemOrNullObject: (name: string) => {
+      const sheet = makeSheet(name);
+      // Office.js resolves isNullObject at load()/sync() time and it stays put
+      // afterwards — it is not a live view of the workbook.
+      sheet.isNullObject = !sheetExists(name);
+      (sheet as { load: unknown }).load = vi.fn(() => {
+        sheet.isNullObject = !sheetExists(name);
+      });
+      return sheet;
+    },
+    add: vi.fn((name: string) => {
+      state.sheets.add(name.toUpperCase());
+      return makeSheet(name);
+    }),
     load: vi.fn(),
     items: [],
+  };
+
+  const names = {
+    add: vi.fn((name: string, refersTo: string) => {
+      state.names.set(name.toUpperCase(), refersTo);
+      return { name, formula: refersTo };
+    }),
+    getItemOrNullObject: (name: string) => {
+      const item = {
+        isNullObject: !state.names.has(name.toUpperCase()),
+        formula: state.names.get(name.toUpperCase()),
+        load: vi.fn(() => {
+          item.isNullObject = !state.names.has(name.toUpperCase());
+          item.formula = state.names.get(name.toUpperCase());
+        }),
+        delete: vi.fn(() => {
+          state.names.delete(name.toUpperCase());
+        }),
+      };
+      return item;
+    },
+  };
+
+  const tables = {
+    add: vi.fn((address: string, _headers: boolean) => {
+      const table = {
+        _name: address,
+        set name(next: string) {
+          state.tables.delete(this._name.toUpperCase());
+          state.tables.add(next.toUpperCase());
+          this._name = next;
+        },
+        get name() {
+          return this._name;
+        },
+      };
+      state.tables.add(address.toUpperCase());
+      return table;
+    }),
+    getItemOrNullObject: (name: string) => {
+      const item = {
+        isNullObject: !state.tables.has(name.toUpperCase()),
+        load: vi.fn(() => {
+          item.isNullObject = !state.tables.has(name.toUpperCase());
+        }),
+        delete: vi.fn(() => {
+          state.tables.delete(name.toUpperCase());
+        }),
+      };
+      return item;
+    },
   };
 
   const context = {
     workbook: {
       worksheets,
-      names: { add: vi.fn() },
-      tables: { add: vi.fn(() => ({ name: "" })) },
+      names,
+      tables,
       application: {
         calculate: vi.fn(() => {
           state.calculations++;
@@ -152,6 +259,11 @@ beforeEach(() => {
   state.calculations = 0;
   state.reads = new Map();
   state.throwOnWrite = undefined;
+  state.sheets = new Set(["S"]);
+  state.names = new Map();
+  state.tables = new Set();
+  state.deletedSheets = [];
+  state.renames = [];
   installOfficeFake();
 });
 
@@ -368,6 +480,123 @@ describe("live rollback does not destroy human edits (P0-2)", () => {
     expect(report.restoredCells).toBe(0);
     expect(state.writes).toHaveLength(0);
     expect(report.conflicts[0]?.reason).toContain("cannot tell");
+  });
+});
+
+describe("structural atomicity on the live path (P0-3)", () => {
+  function sheetPlusCell() {
+    const workbook = new Workbook("test");
+    workbook.addSheet("S").set({ row: 0, col: 0, value: 1 });
+    state.reads.set("S!0,0", { value: 1 });
+    return proposeChangeSet(workbook, {
+      intent: "add a summary sheet",
+      summary: "add a summary sheet",
+      edits: [
+        { kind: "createSheet", name: "Summary" },
+        { kind: "setValue", sheet: "Summary", row: 0, col: 0, value: 7 },
+      ],
+    });
+  }
+
+  it("reverses a created sheet when a cell write fails partway", async () => {
+    const { applyChangeSet } = await import("../src/excel/writer");
+    const changeSet = sheetPlusCell();
+
+    state.throwOnWrite = 0; // the first cell write throws
+    const result = await applyChangeSet(changeSet);
+
+    expect(result.ok).toBe(false);
+    expect(result.rolledBack).toBe(true);
+    // The sheet was created, so it must not be left behind.
+    expect(state.deletedSheets).toContain("Summary");
+    expect(state.sheets.has("SUMMARY")).toBe(false);
+    expect(result.failure).toContain("structural change");
+  });
+
+  it("removes a defined name when the apply fails after creating it", async () => {
+    const { applyChangeSet } = await import("../src/excel/writer");
+    const workbook = new Workbook("test");
+    workbook.addSheet("S").set({ row: 0, col: 0, value: 1 });
+    state.reads.set("S!0,0", { value: 1 });
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "x",
+      summary: "x",
+      edits: [
+        { kind: "defineName", name: "Rev", refersTo: "=S!$A$1" },
+        { kind: "setValue", sheet: "S", row: 0, col: 0, value: 2 },
+      ],
+    });
+
+    state.throwOnWrite = 0;
+    const result = await applyChangeSet(changeSet);
+    expect(result.ok).toBe(false);
+    expect(state.names.has("REV")).toBe(false);
+  });
+
+  it("deletes a created sheet on a user-initiated rollback", async () => {
+    const { applyChangeSet, rollbackChangeSet } = await import("../src/excel/writer");
+    const changeSet = sheetPlusCell();
+
+    expect((await applyChangeSet(changeSet)).ok).toBe(true);
+    expect(state.sheets.has("SUMMARY")).toBe(true);
+
+    const report = await rollbackChangeSet(changeSet);
+    expect(report.reversedStructural.join(" ")).toContain("Summary");
+    expect(state.sheets.has("SUMMARY")).toBe(false);
+  });
+
+  it("keeps a created sheet somebody has since put data on", async () => {
+    const { applyChangeSet, rollbackChangeSet } = await import("../src/excel/writer");
+    const changeSet = sheetPlusCell();
+    expect((await applyChangeSet(changeSet)).ok).toBe(true);
+
+    // A colleague adds a note to the sheet we made. Our own cell is cleared by
+    // the cell rollback, so the used range is theirs alone.
+    state.reads.set("Summary!20,0", { value: "my notes" });
+
+    const report = await rollbackChangeSet(changeSet);
+    expect(state.sheets.has("SUMMARY")).toBe(true);
+    expect(report.unrestorable.join(" ")).toContain("NOT deleted");
+  });
+
+  it("leaves a defined name alone when somebody repointed it", async () => {
+    const { applyChangeSet, rollbackChangeSet } = await import("../src/excel/writer");
+    const workbook = new Workbook("test");
+    workbook.addSheet("S").set({ row: 0, col: 0, value: 1 });
+    state.reads.set("S!0,0", { value: 1 });
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "x",
+      summary: "x",
+      edits: [{ kind: "defineName", name: "Rev", refersTo: "=S!$A$1" }],
+    });
+    expect((await applyChangeSet(changeSet)).ok).toBe(true);
+
+    state.names.set("REV", "=S!$C$3"); // somebody edits the name
+    const report = await rollbackChangeSet(changeSet);
+
+    expect(state.names.get("REV")).toBe("=S!$C$3");
+    expect(report.unrestorable.join(" ")).toContain("somebody has edited it");
+  });
+
+  it("applies structural edits one sync at a time so partial failure is known", async () => {
+    const { applyChangeSet } = await import("../src/excel/writer");
+    const workbook = new Workbook("test");
+    workbook.addSheet("S");
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "x",
+      summary: "x",
+      edits: [
+        { kind: "createSheet", name: "One" },
+        { kind: "createSheet", name: "Two" },
+      ],
+    });
+
+    const before = state.syncs;
+    await applyChangeSet(changeSet);
+    // One sync per structural edit, not one for the pair.
+    expect(state.syncs - before).toBeGreaterThanOrEqual(2);
+    expect(state.sheets.has("ONE")).toBe(true);
+    expect(state.sheets.has("TWO")).toBe(true);
   });
 });
 

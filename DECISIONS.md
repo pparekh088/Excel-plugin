@@ -249,3 +249,43 @@ Second, a conflict means the rollback is genuinely partial — some of our chang
 survives in the workbook — so `ok: true` on a report with conflicts means
 "completed as designed", not "the workbook is back to its prior state". The
 transcript says so in those words.
+
+## D-027 · Structural edits are reversed by planned inverses, not by snapshots (2026-08-06)
+
+A change set that created a sheet and wrote formulas onto it was half a
+transaction: the cells were reversible, the sheet was not. Rollback restored
+the cells, listed the sheet under `unrestorable`, and reported `ok: true` — so
+the workbook was left holding an empty sheet the user never asked for, and the
+report called that a success.
+
+Cell edits are reversible because a cell has a prior state to snapshot. A sheet
+that did not exist has none, so reversing it needs an explicit inverse:
+create→delete, rename→rename back, defineName→delete (or restore the definition
+we overwrote), createTable→delete. Those inverses are planned at propose time,
+against the pre-apply workbook, because afterwards we can no longer tell
+whether we were the ones who created the thing. `planCompensation` is pure and
+lives in the engine; each host executes the plan (`applyCompensation` for the
+simulator, `undoStructural` for Office.js), which keeps the deterministic layer
+free of Excel.
+
+Every inverse carries the same guard cell rollback uses — reverse it only if we
+can still prove it is ours:
+
+- a sheet we created that now holds cells we did not write is NOT deleted
+- a rename is not undone if a sheet has reappeared under the old name
+- a defined name that has been repointed since is left where it is
+- an edit that applied as a no-op (the sheet already existed) has no inverse at
+  all, and saying so is the whole point of planning at propose time
+
+Live applies now run one sync per structural edit rather than batching them.
+That costs a round trip per edit — there are rarely more than a couple — and
+buys the ability to say exactly which ones landed when a later write throws.
+Batched, a failure would leave us knowing only that "some of them" applied,
+and an inverse we cannot aim is worse than none.
+
+Two honest limits. This is compensation, not a transaction: there is no atomic
+commit in Office.js, so a failure between the structural sync and the cell
+writes is recovered by running inverses, and an inverse can itself fail (each
+one is caught and reported rather than stranding the rest). And a *guarded*
+inverse that refuses is a genuinely partial rollback — the report names what
+stayed and why, rather than counting it as restored.

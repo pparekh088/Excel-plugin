@@ -10,6 +10,7 @@
 
 import { DependencyGraph } from "../graph/graph";
 import { Cell, Workbook, a1, fullAddress } from "../model/workbook";
+import { applyCompensation, planCompensation } from "./structural";
 import {
   CellEdit,
   CellSnapshot,
@@ -188,6 +189,9 @@ export function proposeChangeSet(workbook: Workbook, options: ProposeOptions): C
     risk: overallRisk(options.edits, workbook),
     status: "proposed",
     snapshots: snapshot(workbook, options.edits),
+    // Planned now, against the pre-apply workbook: once the sheet exists we can
+    // no longer tell whether we were the ones who created it.
+    compensation: planCompensation(workbook, options.edits),
     diff: buildDiff(workbook, options.edits),
     impact: analyzeImpact(workbook, graph, options.edits),
   };
@@ -246,7 +250,15 @@ export function applyToWorkbook(workbook: Workbook, changeSet: ChangeSet): void 
         break;
       case "defineName":
         if (edit.name && edit.refersTo) {
-          workbook.names.push({ name: edit.name, scope: null, refersTo: edit.refersTo });
+          // Defining a name that exists REPLACES it, as Excel's names.add
+          // does. Pushing a second entry left two definitions of one name,
+          // and the lookup would then answer with whichever came first.
+          workbook.removeName(edit.name, edit.sheet ?? null);
+          workbook.names.push({
+            name: edit.name,
+            scope: edit.sheet ?? null,
+            refersTo: edit.refersTo,
+          });
         }
         break;
       default:
@@ -366,25 +378,14 @@ export function rollback(
     appliedByCell.set(`${state.sheet.toUpperCase()}!${state.row},${state.col}`, state);
   }
 
-  for (const edit of changeSet.edits) {
-    if (isCellEdit(edit)) continue;
-    switch (edit.kind) {
-      case "createSheet":
-        unrestorable.push(
-          `Sheet "${edit.name}" was created; removing it is not part of rollback ` +
-            `(delete it manually if unwanted).`
-        );
-        break;
-      case "renameSheet":
-        unrestorable.push(`Sheet rename ${edit.name} -> ${edit.newName} is not reversed.`);
-        break;
-      case "createTable":
-        unrestorable.push(`Table "${edit.name}" was created and is not removed by rollback.`);
-        break;
-      case "defineName":
-        unrestorable.push(`Defined name "${edit.name}" is not removed by rollback.`);
-        break;
-    }
+  const structuralEdits = changeSet.edits.filter((edit) => !isCellEdit(edit));
+  if (structuralEdits.length > 0 && changeSet.compensation === undefined) {
+    // A change set that predates compensation planning, or one that came back
+    // from storage without it. We cannot invent the pre-state after the fact.
+    unrestorable.push(
+      `${structuralEdits.length} structural change(s) have no recorded inverse, so they are ` +
+        `not reversed: ${structuralEdits.map((edit) => edit.kind).join(", ")}.`
+    );
   }
 
   for (const snap of changeSet.snapshots) {
@@ -446,6 +447,13 @@ export function rollback(
     restoredCells++;
   }
 
+  // Structural inverses run AFTER the cells are restored: a sheet we created
+  // can only be deleted once we have put back whatever we wrote on it.
+  const structural = applyCompensation(workbook, changeSet.compensation ?? [], {
+    ...(options.force !== undefined ? { force: options.force } : {}),
+  });
+  unrestorable.push(...structural.unreversed);
+
   if (workbook.pivots.length > 0) {
     unrestorable.push(
       `${workbook.pivots.length} pivot table(s) present: their caches are not restored by ` +
@@ -456,6 +464,7 @@ export function rollback(
   return {
     changeSetId: changeSet.id,
     restoredCells,
+    reversedStructural: structural.reversed,
     unrestorable,
     conflicts,
     // "ok" means the rollback completed as designed — conflicts are a correct

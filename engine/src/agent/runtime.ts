@@ -393,6 +393,9 @@ export async function runAgent(
       changeSet.rolledBackAt = (options.now ?? (() => new Date().toISOString()))();
       transcript.push(
         `Rolled back ${report.restoredCells} cell(s).` +
+          (report.reversedStructural.length > 0
+            ? ` ${report.reversedStructural.join(" ")}`
+            : "") +
           (report.unrestorable.length > 0
             ? ` Could NOT restore: ${report.unrestorable.join(" ")}`
             : report.conflicts.length === 0

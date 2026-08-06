@@ -317,7 +317,9 @@ describe("rollback fidelity (Phase 3 gate: byte-identical restore)", () => {
     });
     applyToWorkbook(workbook, changeSet);
     const report = rollback(workbook, changeSet);
-    expect(report.unrestorable.some((item) => item.includes("New"))).toBe(true);
+    // The sheet has a planned inverse and is genuinely removed; the pivot
+    // cache does not and is reported rather than glossed over.
+    expect(report.reversedStructural.some((item) => item.includes("New"))).toBe(true);
     expect(report.unrestorable.some((item) => item.includes("pivot"))).toBe(true);
   });
 });

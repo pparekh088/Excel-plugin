@@ -17,9 +17,11 @@
 import type {
   CellSnapshot,
   ChangeSet,
+  CompensatingOp,
   Edit,
   RollbackConflict,
   RollbackOptions,
+  StructuralEdit,
 } from "ledger-engine";
 import { isCellEdit } from "ledger-engine";
 
@@ -41,6 +43,8 @@ export interface ApplyResult {
   failure?: string;
   /** True when a partial write had to be rolled back. */
   rolledBack?: boolean;
+  /** Structural changes reversed as part of that rollback, in plain language. */
+  structuralReversed?: string[];
 }
 
 export interface LiveDriftEntry {
@@ -115,17 +119,29 @@ export async function applyChangeSet(
 
   const batchSize = options.batchSize ?? DEFAULT_BATCH;
   const cellEdits = changeSet.edits.filter(isCellEdit);
+  const structuralEdits = changeSet.edits.filter(
+    (edit): edit is StructuralEdit => !isCellEdit(edit)
+  );
+  // planCompensation emits one op per structural edit, in order, so the two
+  // arrays line up by index.
+  const compensation = changeSet.compensation ?? [];
+  const landed: CompensatingOp[] = [];
   let written = 0;
 
   try {
-    await Excel.run(async (context) => {
-      // Structural edits first: later cell writes may target new sheets.
-      for (const edit of changeSet.edits) {
-        if (isCellEdit(edit)) continue;
-        applyStructural(context, edit);
-      }
-      await context.sync();
+    // Structural edits first (later cell writes may target new sheets), and
+    // one sync each: batching them would leave us unable to say which of them
+    // landed if the sync throws, and an inverse we cannot aim is useless.
+    for (let index = 0; index < structuralEdits.length; index++) {
+      await Excel.run(async (context) => {
+        applyStructural(context, structuralEdits[index]!);
+        await context.sync();
+      });
+      const op = compensation[index];
+      if (op) landed.push(op);
+    }
 
+    await Excel.run(async (context) => {
       for (let index = 0; index < cellEdits.length; index += batchSize) {
         const batch = cellEdits.slice(index, index + batchSize);
         // Suspension lasts only until the next sync, so re-arm every batch.
@@ -166,11 +182,24 @@ export async function applyChangeSet(
     const message = error instanceof Error ? error.message : String(error);
     try {
       await restoreSnapshots(changeSet.snapshots);
+      // Cells first, then the structural inverses — a sheet we created can
+      // only be removed once its contents are back where they belong. Nobody
+      // can have edited between our write and this recovery, so the guards
+      // are bypassed: leaving half a transaction behind is the worse outcome.
+      const structural = await undoStructural(landed, { force: true });
       return {
         ok: false,
         cellsWritten: written,
         rolledBack: true,
-        failure: `Write failed after ${written} cell(s) (${message}). Restored from snapshot.`,
+        structuralReversed: structural.reversed,
+        failure:
+          `Write failed after ${written} cell(s) (${message}). Restored from snapshot` +
+          (structural.reversed.length > 0
+            ? ` and reversed ${structural.reversed.length} structural change(s).`
+            : ".") +
+          (structural.unreversed.length > 0
+            ? ` Could NOT reverse: ${structural.unreversed.join(" ")}`
+            : ""),
       };
     } catch (restoreError) {
       const restoreMessage =
@@ -292,8 +321,193 @@ export async function captureLiveAppliedState(changeSet: ChangeSet): Promise<Cel
 export interface LiveRollbackReport {
   restoredCells: number;
   conflicts: RollbackConflict[];
+  /** Structural changes actually reversed. */
+  reversedStructural: string[];
   unrestorable: string[];
   ok: boolean;
+}
+
+export interface StructuralUndoResult {
+  reversed: string[];
+  unreversed: string[];
+}
+
+/**
+ * Execute compensating operations against the live workbook, in reverse order.
+ *
+ * The engine plans these (`planCompensation`) — it knows what the inverse of
+ * each structural edit is and what has to be true for the inverse to be safe.
+ * This function is only the Office.js executor for that plan, which is why the
+ * guards read live state here rather than being decided in the engine.
+ *
+ * `force` skips the guards and is used in exactly two places: recovering from
+ * a failed apply (nobody can have edited in between) and an explicit user
+ * decision made with the reasons in front of them.
+ */
+export async function undoStructural(
+  ops: CompensatingOp[],
+  options: { force?: boolean } = {}
+): Promise<StructuralUndoResult> {
+  const reversed: string[] = [];
+  const unreversed: string[] = [];
+
+  for (const op of [...ops].reverse()) {
+    try {
+      switch (op.kind) {
+        case "none":
+          unreversed.push(`${op.describes}: ${op.reason}`);
+          break;
+
+        case "deleteSheet": {
+          const outcome = await undoCreateSheet(op.sheet, options.force ?? false);
+          (outcome.ok ? reversed : unreversed).push(outcome.message);
+          break;
+        }
+
+        case "renameSheet": {
+          const outcome = await undoRename(op.from, op.to, options.force ?? false);
+          (outcome.ok ? reversed : unreversed).push(outcome.message);
+          break;
+        }
+
+        case "deleteName": {
+          const outcome = await undoDefineName(op.name, op.expectRefersTo, options.force ?? false);
+          (outcome.ok ? reversed : unreversed).push(outcome.message);
+          break;
+        }
+
+        case "restoreName": {
+          await Excel.run(async (context) => {
+            const existing = context.workbook.names.getItemOrNullObject(op.name);
+            existing.load(["isNullObject", "formula"]);
+            await context.sync();
+            if (!existing.isNullObject) existing.delete();
+            context.workbook.names.add(op.name, op.refersTo);
+            await context.sync();
+          });
+          reversed.push(`Restored the defined name "${op.name}" to ${op.refersTo}.`);
+          break;
+        }
+
+        case "deleteTable": {
+          const outcome = await undoCreateTable(op.name);
+          (outcome.ok ? reversed : unreversed).push(outcome.message);
+          break;
+        }
+      }
+    } catch (error) {
+      // One inverse failing must not strand the rest: keep going and say so.
+      const message = error instanceof Error ? error.message : String(error);
+      unreversed.push(`Undoing ${op.kind} failed: ${message}`);
+    }
+  }
+
+  return { reversed, unreversed };
+}
+
+interface UndoOutcome {
+  ok: boolean;
+  message: string;
+}
+
+async function undoCreateSheet(name: string, force: boolean): Promise<UndoOutcome> {
+  return Excel.run(async (context) => {
+    const sheet = context.workbook.worksheets.getItemOrNullObject(name);
+    sheet.load("isNullObject");
+    await context.sync();
+    if (sheet.isNullObject) {
+      return { ok: false, message: `Sheet "${name}" is already gone; nothing to delete.` };
+    }
+
+    // The guard: the sheet must be empty. Our own cells were restored (and so
+    // cleared, since they did not exist before), so anything left is somebody
+    // else's work and the sheet stays.
+    const used = sheet.getUsedRangeOrNullObject(true);
+    used.load(["isNullObject", "address"]);
+    await context.sync();
+
+    if (!used.isNullObject && !force) {
+      return {
+        ok: false,
+        message:
+          `Sheet "${name}" was created by this change but is no longer empty (${used.address}), ` +
+          `so it was NOT deleted. Delete it by hand if you want it gone.`,
+      };
+    }
+    sheet.delete();
+    await context.sync();
+    return { ok: true, message: `Deleted the sheet "${name}" this change created.` };
+  });
+}
+
+async function undoRename(from: string, to: string, force: boolean): Promise<UndoOutcome> {
+  return Excel.run(async (context) => {
+    const sheet = context.workbook.worksheets.getItemOrNullObject(from);
+    const clash = context.workbook.worksheets.getItemOrNullObject(to);
+    sheet.load("isNullObject");
+    clash.load("isNullObject");
+    await context.sync();
+
+    if (sheet.isNullObject) {
+      return {
+        ok: false,
+        message: `Sheet "${from}" no longer exists, so the rename back to "${to}" was skipped.`,
+      };
+    }
+    if (!clash.isNullObject && !force) {
+      return {
+        ok: false,
+        message: `Cannot rename "${from}" back to "${to}": a sheet by that name exists again.`,
+      };
+    }
+    sheet.name = to;
+    await context.sync();
+    return { ok: true, message: `Renamed the sheet "${from}" back to "${to}".` };
+  });
+}
+
+async function undoDefineName(
+  name: string,
+  expectRefersTo: string,
+  force: boolean
+): Promise<UndoOutcome> {
+  return Excel.run(async (context) => {
+    const item = context.workbook.names.getItemOrNullObject(name);
+    item.load(["isNullObject", "formula"]);
+    await context.sync();
+
+    if (item.isNullObject) {
+      return { ok: false, message: `Defined name "${name}" is already gone; nothing to remove.` };
+    }
+    const current = typeof item.formula === "string" ? item.formula : undefined;
+    if (current !== undefined && current !== expectRefersTo && !force) {
+      return {
+        ok: false,
+        message:
+          `Defined name "${name}" now points at ${current} rather than the ${expectRefersTo} ` +
+          `this change set set, so somebody has edited it. Left alone.`,
+      };
+    }
+    item.delete();
+    await context.sync();
+    return { ok: true, message: `Removed the defined name "${name}" this change created.` };
+  });
+}
+
+async function undoCreateTable(name: string): Promise<UndoOutcome> {
+  return Excel.run(async (context) => {
+    const table = context.workbook.tables.getItemOrNullObject(name);
+    table.load("isNullObject");
+    await context.sync();
+    if (table.isNullObject) {
+      return { ok: false, message: `Table "${name}" is already gone; nothing to remove.` };
+    }
+    // delete() removes the table object; the cells stay, and the cell rollback
+    // has already put their prior contents back.
+    table.delete();
+    await context.sync();
+    return { ok: true, message: `Removed the table "${name}" this change created.` };
+  });
 }
 
 /** Same rule as the engine: formulas for formula cells, values for constants. */
@@ -369,15 +583,28 @@ export async function rollbackChangeSet(
   const restoredCells = restorable.length > 0 ? await restoreSnapshots(restorable) : 0;
 
   const unrestorable: string[] = [];
-  for (const edit of changeSet.edits) {
-    if (isCellEdit(edit)) continue;
+  const structuralEdits = changeSet.edits.filter((edit) => !isCellEdit(edit));
+  if (structuralEdits.length > 0 && changeSet.compensation === undefined) {
     unrestorable.push(
-      `Structural change (${edit.kind}${edit.name ? ` "${edit.name}"` : ""}) is not reversed ` +
-        `by rollback; undo it by hand if unwanted.`
+      `${structuralEdits.length} structural change(s) have no recorded inverse, so they are ` +
+        `not reversed: ${structuralEdits.map((edit) => edit.kind).join(", ")}.`
     );
   }
 
-  return { restoredCells, conflicts, unrestorable, ok: true };
+  // After the cells, so a sheet we created is empty by the time we try to
+  // remove it. Guards stay on: a human may have edited since we applied.
+  const structural = await undoStructural(changeSet.compensation ?? [], {
+    ...(options.force !== undefined ? { force: options.force } : {}),
+  });
+  unrestorable.push(...structural.unreversed);
+
+  return {
+    restoredCells,
+    conflicts,
+    reversedStructural: structural.reversed,
+    unrestorable,
+    ok: true,
+  };
 }
 
 /**

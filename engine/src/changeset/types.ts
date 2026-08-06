@@ -12,6 +12,7 @@
  */
 
 import { CellValue } from "../model/workbook";
+import type { CompensatingOp } from "./structural";
 
 export type RiskTier = "low" | "medium" | "high";
 
@@ -128,6 +129,13 @@ export interface ChangeSet {
    * their work must not be silently reverted.
    */
   appliedState?: CellSnapshot[];
+  /**
+   * The inverse of each structural edit, planned before applying while the
+   * pre-state is still observable. A sheet that did not exist has no snapshot
+   * to restore, so reversing it needs an explicit compensating operation.
+   * Runs in reverse order during rollback.
+   */
+  compensation?: CompensatingOp[];
   diff: DiffEntry[];
   impact: ImpactSummary;
   /** Set when the change set was aborted or failed. */
@@ -149,6 +157,12 @@ export interface RollbackConflict {
 export interface RollbackReport {
   changeSetId: string;
   restoredCells: number;
+  /**
+   * Structural changes that were actually reversed — the sheet deleted, the
+   * name restored. Reported separately because "restoredCells: 0" on a change
+   * set that only created a sheet is not the same as "nothing happened".
+   */
+  reversedStructural: string[];
   /** Things we know we cannot restore, stated plainly. */
   unrestorable: string[];
   /**

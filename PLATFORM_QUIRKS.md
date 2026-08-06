@@ -111,3 +111,14 @@ Not yet verified on a live host: whether the re-read observes a cell the user is
 *currently* editing in the formula bar but has not committed. If Excel reports
 the pre-edit value there, the user's in-flight edit would be restored over on
 rollback. On the sideload checklist as item 8b.
+
+## Q-013 · `isNullObject` is a snapshot, not a live view — status: designed around
+
+`getItemOrNullObject(...)` returns a placeholder whose `isNullObject` resolves
+at `load()`/`sync()` time and then stays put. Code that adds the sheet and
+re-checks the same handle sees the value from BEFORE the add — which is what
+`writeAiLog` relies on to decide whether to write headers.
+
+Recorded because the test double got this wrong first: a live getter made
+`isNullObject` flip after `worksheets.add`, and the _AI_Log header row silently
+stopped being written. The fake now snapshots on `load()`, matching the host.

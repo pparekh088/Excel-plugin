@@ -27,9 +27,19 @@ see, so the agent never assumes coverage it does not have.
 
 **Change.** Every mutation goes through a change set: propose → preview
 (before/after diff, risk tier, downstream impact) → approve → drift check →
-apply atomically → verify → repair or roll back → explain. Rollback restores
-values, formulas and number formats **byte-identically**, verified across the
-whole corpus, and reports honestly what it cannot restore.
+apply → verify → repair or roll back → explain. Rollback restores values,
+formulas and number formats **byte-identically**, verified across the whole
+corpus.
+
+Two things it deliberately will not do. It will not revert a cell somebody
+edited after we applied — that cell is reported as a conflict and left exactly
+as it is, because undoing our mistake at the cost of their work is the worst
+thing this system could do. And it will not delete a sheet it created if
+somebody has since put data on it. Both make rollback *partial*, and the report
+says which parts, in those words. Structural edits are reversed by inverses
+planned before the apply (create→delete, rename→rename back, defineName→restore
+the prior definition), because there is no atomic commit in Office.js to lean
+on — this is compensation, and it is described as such.
 
 **Never destroy.** Cells-destroyed is a hard gate at zero. A protected sheet,
 a merged cell, a concurrent edit by a colleague, or a formula the parser does
@@ -43,11 +53,11 @@ a silent one.
 | Audit precision | ≥ 95% | **100%** (recall 100%, 0 false positives on clean models) |
 | Edit-task success | ≥ 85% | **100%** |
 | Cells destroyed | 0 | **0** |
-| Rollback fidelity | byte-identical | **exact** across all 18 corpus workbooks |
+| Rollback fidelity | byte-identical | **exact** across all 18 corpus workbooks (cells nobody edited after apply — D-026) |
 | WIL build, 500k formulas | < 30s, < 500MB | **19.1s**, **221MB** retained |
 | 5k-cell `AI.CLASSIFY` drag | under budget | **150** calls, free on re-run |
 
-Tests: engine **1090**, add-in **36**, server **56**. See `PROGRESS.md` for
+Tests: engine **1136**, add-in **46**, server **92**. See `PROGRESS.md` for
 the full picture including the sideload checklist — the work that genuinely
 needs a live Excel host and has not been run.
 
@@ -76,7 +86,7 @@ docs/gates/       One report per phase, with measured numbers and open items
 ```bash
 npm ci                      # engine + addin (npm workspaces)
 
-npm test -w engine          # 1090 tests
+npm test -w engine          # 1136 tests
 npm run eval:audit -w engine  # precision/recall against the corpus
 npm run eval:edit  -w engine  # agent edit tasks, cells-destroyed
 npm run eval:aifn  -w engine  # AI budget + cache gates
@@ -109,8 +119,9 @@ These are not aspirations; they are enforced and tested.
   JSON Schema server-side.
 - **INV-2** No silent writes. Propose → preview → approve → apply → log.
   Trusted-session mode auto-approves only plans that are entirely LOW risk.
-- **INV-3** Snapshot before write; rollback reports what it cannot restore, and
-  refuses to overwrite a cell a human edited after we applied.
+- **INV-3** Snapshot before write; structural edits get a planned inverse.
+  Rollback refuses to overwrite a cell a human edited after we applied, and
+  reports what it could not restore rather than glossing over it.
 - **INV-4** We build the dependency graph from our own parse, never
   `getPrecedents()`.
 - **INV-5** Chunked, budgeted I/O — ≤10k cells per sync, tracked objects
@@ -123,7 +134,7 @@ These are not aspirations; they are enforced and tested.
 
 ## Documentation
 
-- `DECISIONS.md` — 26 logged decisions and deviations, with reasoning
+- `DECISIONS.md` — 27 logged decisions and deviations, with reasoning
 - `PLATFORM_QUIRKS.md` — Office.js behaviour traps (product IP)
 - `PROGRESS.md` — status, gate results, sideload checklist, known gaps
 - `docs/gates/phase-{0..5}.md` — per-phase reports including what failed first
