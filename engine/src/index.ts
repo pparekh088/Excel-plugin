@@ -4,3 +4,15 @@ export * from "./parser/parser";
 export * from "./parser/serialize";
 export * from "./parser/r1c1";
 export * from "./parser/refs";
+
+export * from "./model/workbook";
+
+export * from "./graph/cellIndex";
+export * from "./graph/runs";
+export * from "./graph/resolve";
+export * from "./graph/graph";
+
+export * from "./wil/semantic";
+export * from "./wil/serialize";
+
+export * from "./corpus";

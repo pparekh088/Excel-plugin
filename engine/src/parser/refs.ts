@@ -21,6 +21,14 @@ export interface AreaRef {
   endRow: number | null;
   startCol: number | null;
   endCol: number | null;
+  /**
+   * Absoluteness of each bound ($). Required to expand a reference across a
+   * collapsed run: relative bounds shift with the fill, absolute ones pin.
+   */
+  startRowAbs: boolean;
+  endRowAbs: boolean;
+  startColAbs: boolean;
+  endColAbs: boolean;
 }
 
 export interface NameUse {
@@ -69,14 +77,29 @@ export const VOLATILE_FUNCTIONS = new Set([
 
 export const OPAQUE_FUNCTIONS = new Set(["INDIRECT", "OFFSET"]);
 
+/** Order bounds ascending, carrying each bound's $ flag with it. */
 function normalizeArea(area: AreaRef): AreaRef {
-  const swap = (a: number | null, b: number | null): [number | null, number | null] => {
-    if (a !== null && b !== null && a > b) return [b, a];
-    return [a, b];
+  let { startRow, endRow, startCol, endCol } = area;
+  let { startRowAbs, endRowAbs, startColAbs, endColAbs } = area;
+  if (startRow !== null && endRow !== null && startRow > endRow) {
+    [startRow, endRow] = [endRow, startRow];
+    [startRowAbs, endRowAbs] = [endRowAbs, startRowAbs];
+  }
+  if (startCol !== null && endCol !== null && startCol > endCol) {
+    [startCol, endCol] = [endCol, startCol];
+    [startColAbs, endColAbs] = [endColAbs, startColAbs];
+  }
+  return {
+    ...area,
+    startRow,
+    endRow,
+    startCol,
+    endCol,
+    startRowAbs,
+    endRowAbs,
+    startColAbs,
+    endColAbs,
   };
-  const [startRow, endRow] = swap(area.startRow, area.endRow);
-  const [startCol, endCol] = swap(area.startCol, area.endCol);
-  return { ...area, startRow, endRow, startCol, endCol };
 }
 
 export function extractRefs(root: Node): ExtractedRefs {
@@ -111,6 +134,10 @@ export function extractRefs(root: Node): ExtractedRefs {
             endRow: node.addr.row,
             startCol: node.addr.col,
             endCol: node.addr.col,
+            startRowAbs: node.addr.rowAbs,
+            endRowAbs: node.addr.rowAbs,
+            startColAbs: node.addr.colAbs,
+            endColAbs: node.addr.colAbs,
           })
         );
         return;
@@ -124,6 +151,10 @@ export function extractRefs(root: Node): ExtractedRefs {
             endRow: node.end.row,
             startCol: node.start.col,
             endCol: node.end.col,
+            startRowAbs: node.start.rowAbs,
+            endRowAbs: node.end.rowAbs,
+            startColAbs: node.start.colAbs,
+            endColAbs: node.end.colAbs,
           })
         );
         return;
@@ -137,6 +168,10 @@ export function extractRefs(root: Node): ExtractedRefs {
             endRow: null,
             startCol: node.startCol,
             endCol: node.endCol,
+            startRowAbs: true,
+            endRowAbs: true,
+            startColAbs: node.startAbs,
+            endColAbs: node.endAbs,
           })
         );
         return;
@@ -150,6 +185,10 @@ export function extractRefs(root: Node): ExtractedRefs {
             endRow: node.endRow,
             startCol: null,
             endCol: null,
+            startRowAbs: node.startAbs,
+            endRowAbs: node.endAbs,
+            startColAbs: true,
+            endColAbs: true,
           })
         );
         return;
