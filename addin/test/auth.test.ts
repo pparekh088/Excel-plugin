@@ -191,7 +191,8 @@ describe("AI.* custom functions send the token", () => {
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => ({
       ok: true,
       status: 200,
-      json: async () => ({ results: ["yes"] }),
+      // The server's real envelope shape: {ok, value, error} per request.
+      json: async () => ({ results: [{ ok: true, value: "yes" }] }),
     }));
     (globalThis as Record<string, unknown>).fetch = fetchMock;
 
@@ -209,7 +210,8 @@ describe("AI.* custom functions send the token", () => {
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => ({
       ok: true,
       status: 200,
-      json: async () => ({ results: ["yes"] }),
+      // The server's real envelope shape: {ok, value, error} per request.
+      json: async () => ({ results: [{ ok: true, value: "yes" }] }),
     }));
     (globalThis as Record<string, unknown>).fetch = fetchMock;
 

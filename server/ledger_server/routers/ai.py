@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..auth import CurrentPrincipal, Principal
 from ..llm import CompletionRequest, CostMeter
 from ..prompts import fence_workbook_context
+from ..sessions import SessionStore
 
 router = APIRouter(prefix="/api/v1/ai", tags=["ai"])
 
@@ -86,11 +87,33 @@ class ForecastResponse(BaseModel):
     caveat: str | None = None
 
 
+async def validated_session_id(
+    principal: Principal, session_id: str | None, request: Request
+) -> str | None:
+    """Only meter against a session the caller actually owns.
+
+    The session ID arrives from the client, and an unvalidated one is an
+    invitation to manufacture arbitrary meter buckets — or to book spend
+    against somebody else's session. A missing or foreign session is treated
+    the same as none: the spend still lands in the caller's own catch-all
+    bucket, so nothing is lost, and nothing is attributed to a session the
+    caller cannot prove is theirs.
+    """
+    if session_id is None:
+        return None
+    store: SessionStore = request.app.state.session_store
+    session = await store.get(session_id)
+    if session is None or session.principal_subject != principal.subject:
+        return None
+    return session_id
+
+
 def ai_meter_for(principal: Principal, session_id: str | None, request: Request) -> CostMeter:
-    """One meter per (principal, session). Never one per process.
+    """One meter per (principal, validated session). Never one per process.
 
     A process-global meter mixes every user's spend into one number, which is
-    wrong the moment there are two users.
+    wrong the moment there are two users. `session_id` must already have been
+    through `validated_session_id`.
     """
     meters: dict[str, CostMeter] = request.app.state.ai_cost_meters
     key = f"{principal.subject}::{session_id or '-'}"
@@ -138,7 +161,8 @@ async def batch(
     request: Request, body: BatchRequest, principal: CurrentPrincipal
 ) -> BatchResponse:
     gateway = request.app.state.llm_gateway
-    meter = ai_meter_for(principal, body.session_id, request)
+    session_id = await validated_session_id(principal, body.session_id, request)
+    meter = ai_meter_for(principal, session_id, request)
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_AI_CALLS)
 
     async def run_one(item: AiRequestItem) -> AiResultItem:

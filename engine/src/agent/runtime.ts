@@ -399,21 +399,38 @@ export async function runAgent(
       break;
     }
 
+    // Everything about the repair is computed against `verified` — the
+    // workbook AS THE HOST REPORTS IT NOW — never against the pre-apply model.
+    // The distinction is invisible on the simulator (same object) and decisive
+    // on Office.js: a repair snapshotted against the pre-apply state claims
+    // the original values as its "before", so its own drift check would read
+    // our first write as a foreign edit and refuse, and its snapshots would
+    // roll back to a state that never followed the approved change.
     const repairEdits: Edit[] = [];
     for (const step of repairPlan.plan.steps) {
-      repairEdits.push(...(await options.executor(step, workbook)));
+      repairEdits.push(...(await options.executor(step, verified)));
     }
     if (repairEdits.length === 0) break;
+
+    // Propose FIRST, so the thing the user is asked to approve is the actual
+    // repair — its own diff, risk and impact — not the original change set
+    // wearing new summary text.
+    const repairSet = proposeChangeSet(verified, {
+      intent: `repair: ${options.intent}`,
+      summary: repairPlan.plan.summary,
+      edits: repairEdits,
+    });
 
     // INV-2 applies to repairs too. The user approved a set of cells at a risk
     // tier; a fix that stays inside that is finishing the job they said yes
     // to, and a fix that reaches further is a new proposal.
-    const scope = classifyRepair(workbook, changeSet, repairEdits);
+    const scope = classifyRepair(verified, changeSet, repairEdits);
     if (scope.verdict === "needs-approval" || repairApproval === "always") {
+      const preview = explainChangeSet(repairSet);
       const text =
         repairApproval === "always" && scope.verdict === "in-scope"
-          ? `Apply this fix?\n\n${repairPlan.plan.summary}`
-          : describeRepairEscalation(scope, repairPlan.plan.summary);
+          ? `Apply this fix?\n\n${preview}`
+          : `${describeRepairEscalation(scope, repairPlan.plan.summary)}\n\n${preview}`;
       transcript.push(
         scope.verdict === "needs-approval"
           ? `This fix goes beyond what you approved (${scope.reasons.join("; ")}), so I am asking.`
@@ -421,7 +438,7 @@ export async function runAgent(
       );
       const repairDecision = await options.approver({
         kind: "changeset",
-        changeSet,
+        changeSet: repairSet,
         text,
       });
       if (repairDecision !== "approve") {
@@ -435,14 +452,18 @@ export async function runAgent(
       );
     }
 
-    // The repair joins the SAME change set so one rollback undoes everything.
-    const repairSet = proposeChangeSet(workbook, {
-      intent: `repair: ${options.intent}`,
-      summary: repairPlan.plan.summary,
-      edits: repairEdits,
-    });
-    await host.apply(repairSet);
+    const repairOutcome = await host.apply(repairSet);
+    if (!repairOutcome.ok) {
+      // A repair the host refused never happened. Merging it anyway would put
+      // edits in the audit record that are not in the workbook and snapshots
+      // in the rollback plan for writes that never landed.
+      transcript.push(
+        `The fix could not be applied: ${repairOutcome.failure ?? "the host refused the write."}`
+      );
+      break;
+    }
 
+    // The repair joins the SAME change set so one rollback undoes everything.
     changeSet = mergeChangeSets(changeSet, repairSet);
     verified = await host.refresh(changeSet);
     verification = verify(verified, changeSet, {
@@ -539,6 +560,11 @@ function mergeChangeSets(original: ChangeSet, repair: ChangeSet): ChangeSet {
     edits: [...original.edits, ...repair.edits],
     snapshots,
     appliedState: [...appliedState.values()],
+    // Structural inverses concatenate in edit order; rollback runs them in
+    // reverse, so the repair's undo before the original's. An approved repair
+    // can carry structural edits, and dropping their inverses here would make
+    // those the one part of the merged set rollback cannot reach.
+    compensation: [...(original.compensation ?? []), ...(repair.compensation ?? [])],
     diff: [...original.diff, ...repair.diff],
     impact: {
       affectedCells: original.impact.affectedCells + repair.impact.affectedCells,

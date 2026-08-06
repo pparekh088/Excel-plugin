@@ -11,56 +11,64 @@
  */
 
 import { AiCoordinator, BUDGET_ERROR, type AiRequest } from "ledger-engine";
-import { createAuthProvider } from "../auth/provider";
-import { getBackendUrl } from "../config";
+import { getActiveSessionId, postToBackend } from "../api/backend";
 
 /* global CustomFunctions */
 
 const MODEL_TIER = "cheap";
 
-interface BatchResponse {
-  results: Array<string | number | boolean>;
-}
-
 /** Marks AI-derived cells so the audit engine can inventory them (§8). */
 const AI_CELL_MARKER = "AI:";
 
 /**
- * The custom-functions runtime is a separate JavaScript context from the task
- * pane unless the manifest declares a SHARED runtime — which ours does. With
- * it, this module and the task pane are the same instance, so the token cache
- * is shared and a recalculation does not re-acquire per batch.
- *
- * These calls used to go out with no Authorization header at all. Against a
- * backend in dev mode that works, which is exactly why it survived: the moment
- * the backend runs LEDGER_AUTH_MODE=entra, every AI.* cell in every workbook
- * returns an error, and the add-in has no way to say why.
+ * A cell whose individual AI call failed shows this rather than poisoning the
+ * whole batch. Distinct from BUDGET_ERROR: budget is a policy refusal the user
+ * configured, this is a backend failure the user did not.
  */
-const auth = createAuthProvider();
+export const AI_ERROR = "#AI_ERROR!";
+
+/**
+ * What the server actually returns from /ai/batch: one envelope per request,
+ * because one bad cell must not fail the other 199 in the batch. Excel can
+ * only display scalars, so the envelope MUST be unwrapped here — handing the
+ * object through would render "[object Object]" in the grid.
+ */
+interface AiResultItem {
+  ok: boolean;
+  value?: unknown;
+  error?: string | null;
+}
+
+interface BatchResponse {
+  results: AiResultItem[];
+}
+
+/** Unwrap one server result envelope into the scalar the cell will hold. */
+export function unwrapAiResult(item: AiResultItem): string | number | boolean {
+  if (!item.ok) return AI_ERROR;
+  const value = item.value;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  // A null/undefined or structured value is a contract violation, not an
+  // answer. Show the error marker rather than coercing garbage into the grid.
+  return AI_ERROR;
+}
 
 async function callBackend(requests: AiRequest[]): Promise<Array<string | number | boolean>> {
-  const token = await auth.getAccessToken();
-  const response = await fetch(`${getBackendUrl()}/api/v1/ai/batch`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ requests }),
+  const body = await postToBackend<BatchResponse>("/api/v1/ai/batch", {
+    requests,
+    // Ties this batch's spend to the workbook session the task pane opened.
+    // Null is accepted (metering falls back to the principal's own bucket),
+    // but with the shared runtime the session is normally present.
+    session_id: getActiveSessionId(),
   });
-  if (!response.ok) {
-    // 401 is worth naming: it is the difference between "the model failed" and
-    // "you are not signed in", and the user can only act on the second.
-    if (response.status === 401 || response.status === 403) {
-      throw new Error(
-        `AI backend rejected the request (${response.status}) — sign in from the Ledger ` +
-          `task pane, then recalculate.`
-      );
-    }
-    throw new Error(`AI backend returned ${response.status}`);
+  if (!Array.isArray(body.results) || body.results.length !== requests.length) {
+    throw new Error(
+      `AI backend returned ${body.results?.length ?? 0} result(s) for ${requests.length} request(s).`
+    );
   }
-  const body = (await response.json()) as BatchResponse;
-  return body.results;
+  return body.results.map(unwrapAiResult);
 }
 
 const coordinator = new AiCoordinator({
@@ -165,14 +173,19 @@ export async function aiForecast(
   seasonLength?: number
 ): Promise<number[][] | string> {
   const history = flatten(range).filter((value): value is number => typeof value === "number");
-  const response = await fetch(`${getBackendUrl()}/api/v1/ai/forecast`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ series: history, horizon, seasonLength: seasonLength ?? 0 }),
-  });
-  if (!response.ok) return `#ERROR! forecast backend returned ${response.status}`;
-  const body = (await response.json()) as { values: number[] };
-  return body.values.map((value) => [value]);
+  try {
+    // Same authenticated path as every other backend call. Forecast used to
+    // have its own bare fetch, which meant it was the one AI.* function still
+    // posting anonymously after auth landed everywhere else.
+    const body = await postToBackend<{ values: number[] }>("/api/v1/ai/forecast", {
+      series: history,
+      horizon,
+      seasonLength: seasonLength ?? 0,
+    });
+    return body.values.map((value) => [value]);
+  } catch (error) {
+    return `#ERROR! ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
 /** Cell marker helper, used by the WIL to inventory AI-derived values. */

@@ -21,6 +21,7 @@ import { CostPanel } from "./CostPanel";
 import { APP_NAME, PHASE, getBackendUrl } from "../config";
 import { createAuthProvider } from "../auth/provider";
 import { ApiError, LedgerClient, type Health } from "../api/client";
+import { setActiveSessionId } from "../api/backend";
 import { runTool, type RunToolOutcome } from "../api/runTool";
 import type { RangeReadInclude } from "./types";
 
@@ -97,8 +98,12 @@ export function App({ hostReady }: Props) {
     try {
       const health = await client.health();
       const session = await client.createSession();
+      // Publish the session so AI.* batches (shared runtime) meter their
+      // spend against this workbook's session rather than the catch-all.
+      setActiveSessionId(session.session_id);
       setBackend({ kind: "online", health, sessionId: session.session_id });
     } catch (exc) {
+      setActiveSessionId(null);
       setBackend({ kind: "offline", message: describeError(exc) });
     }
   }, [client]);

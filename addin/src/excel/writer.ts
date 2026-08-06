@@ -57,12 +57,51 @@ export interface LiveDriftEntry {
 
 const DEFAULT_BATCH = 500;
 
-/** Re-read every snapshotted cell from the live workbook and compare (INV-8). */
+/** Which of the named sheets currently exist, resolved in one sync. */
+async function existingSheets(
+  context: Excel.RequestContext,
+  names: Iterable<string>
+): Promise<Set<string>> {
+  const probes: Array<{ name: string; sheet: Excel.Worksheet }> = [];
+  for (const name of new Set([...names].map((name) => name.toUpperCase()))) {
+    const sheet = context.workbook.worksheets.getItemOrNullObject(name);
+    sheet.load("isNullObject");
+    probes.push({ name, sheet });
+  }
+  await context.sync();
+  return new Set(probes.filter((probe) => !probe.sheet.isNullObject).map((probe) => probe.name));
+}
+
+/**
+ * Re-read every snapshotted cell from the live workbook and compare (INV-8).
+ *
+ * A change set that creates a sheet and writes onto it snapshots cells on a
+ * sheet that CORRECTLY does not exist yet — that was the plan. So a missing
+ * sheet is probed with getItemOrNullObject, and "sheet absent + snapshot says
+ * absent" is the clean expected state, not an error. A missing sheet whose
+ * snapshot claims content is real drift: somebody deleted it since propose.
+ */
 export async function checkLiveDrift(changeSet: ChangeSet): Promise<LiveDriftEntry[]> {
   const drift: LiveDriftEntry[] = [];
   await Excel.run(async (context) => {
+    const present = await existingSheets(
+      context,
+      changeSet.snapshots.map((snap) => snap.sheet)
+    );
+
     const loaded: Array<{ snap: CellSnapshot; range: Excel.Range }> = [];
     for (const snap of changeSet.snapshots) {
+      if (!present.has(snap.sheet.toUpperCase())) {
+        if (!snap.absent) {
+          drift.push({
+            address: `${snap.sheet}!${snap.row},${snap.col}`,
+            expectedFormula: snap.formula,
+            expectedValue: snap.value,
+            actualValue: null,
+          });
+        }
+        continue; // absent snapshot on an absent sheet: exactly as planned
+      }
       const sheet = context.workbook.worksheets.getItem(snap.sheet);
       const range = sheet.getRangeByIndexes(snap.row, snap.col, 1, 1);
       range.load(["values", "formulas"]);
@@ -259,8 +298,19 @@ interface LiveCell {
 async function readTouchedCells(changeSet: ChangeSet): Promise<Map<string, LiveCell>> {
   const live = new Map<string, LiveCell>();
   await Excel.run(async (context) => {
+    // A sheet may be gone by rollback time (a human deleted the one we
+    // created); its cells simply read as absent rather than throwing.
+    const present = await existingSheets(
+      context,
+      changeSet.snapshots.map((snap) => snap.sheet)
+    );
+
     const loaded: Array<{ snap: CellSnapshot; range: Excel.Range }> = [];
     for (const snap of changeSet.snapshots) {
+      if (!present.has(snap.sheet.toUpperCase())) {
+        live.set(cellKey(snap.sheet, snap.row, snap.col), { value: null, absent: true });
+        continue;
+      }
       const sheet = context.workbook.worksheets.getItem(snap.sheet);
       const range = sheet.getRangeByIndexes(snap.row, snap.col, 1, 1);
       range.load(["values", "formulas", "numberFormat"]);
@@ -272,14 +322,18 @@ async function readTouchedCells(changeSet: ChangeSet): Promise<Map<string, LiveC
       const value = (range.values as unknown[][])[0]?.[0] ?? null;
       const rawFormula = (range.formulas as unknown[][])[0]?.[0];
       const numberFormat = (range.numberFormat as unknown[][])[0]?.[0];
+      // Excel's formulas grid echoes the VALUE for non-formula cells and ""
+      // for blanks — both are strings, so "is it a string" cannot mean "does
+      // it hold a formula". Only "=..." counts.
+      const formula =
+        typeof rawFormula === "string" && rawFormula.startsWith("=") ? rawFormula : undefined;
       live.set(cellKey(snap.sheet, snap.row, snap.col), {
         value: normalize(value),
-        ...(typeof rawFormula === "string" && rawFormula.startsWith("=")
-          ? { formula: rawFormula }
-          : {}),
+        ...(formula !== undefined ? { formula } : {}),
         ...(typeof numberFormat === "string" ? { numberFormat } : {}),
-        // Excel has no "absent" — an empty cell reads back as "".
-        absent: normalize(value) === null && typeof rawFormula !== "string",
+        // Excel has no "absent" — a genuinely blank cell reads back as ""
+        // values and "" formulas. Blank means: no value AND no real formula.
+        absent: normalize(value) === null && formula === undefined,
       });
       range.untrack();
     }
@@ -377,20 +431,50 @@ export async function undoStructural(
         }
 
         case "restoreName": {
-          await Excel.run(async (context) => {
+          // Same guard as the deterministic engine and as cell rollback: only
+          // restore over a definition we can prove is still OURS. If the name
+          // now points somewhere other than what this change set set, a human
+          // has edited it since, and restoring the pre-change definition would
+          // destroy their newer work — the exact failure D-026 exists to stop.
+          const outcome = await Excel.run(async (context) => {
             const existing = context.workbook.names.getItemOrNullObject(op.name);
             existing.load(["isNullObject", "formula"]);
             await context.sync();
+
+            const current =
+              !existing.isNullObject && typeof existing.formula === "string"
+                ? existing.formula
+                : undefined;
+            if (
+              current !== undefined &&
+              current !== op.expectRefersTo &&
+              !(options.force ?? false)
+            ) {
+              return {
+                ok: false,
+                message:
+                  `Defined name "${op.name}" has been edited since (now ${current}); its ` +
+                  `prior definition (${op.refersTo}) was NOT restored over that.`,
+              };
+            }
             if (!existing.isNullObject) existing.delete();
             context.workbook.names.add(op.name, op.refersTo);
             await context.sync();
+            return {
+              ok: true,
+              message: `Restored the defined name "${op.name}" to ${op.refersTo}.`,
+            };
           });
-          reversed.push(`Restored the defined name "${op.name}" to ${op.refersTo}.`);
+          (outcome.ok ? reversed : unreversed).push(outcome.message);
           break;
         }
 
         case "deleteTable": {
-          const outcome = await undoCreateTable(op.name);
+          const outcome = await undoCreateTable(
+            op.name,
+            op.expectRange,
+            options.force ?? false
+          );
           (outcome.ok ? reversed : unreversed).push(outcome.message);
           break;
         }
@@ -494,7 +578,11 @@ async function undoDefineName(
   });
 }
 
-async function undoCreateTable(name: string): Promise<UndoOutcome> {
+async function undoCreateTable(
+  name: string,
+  expectRange: string | undefined,
+  force: boolean
+): Promise<UndoOutcome> {
   return Excel.run(async (context) => {
     const table = context.workbook.tables.getItemOrNullObject(name);
     table.load("isNullObject");
@@ -502,6 +590,29 @@ async function undoCreateTable(name: string): Promise<UndoOutcome> {
     if (table.isNullObject) {
       return { ok: false, message: `Table "${name}" is already gone; nothing to remove.` };
     }
+
+    // Same "prove it is still ours" rule as every other inverse. A table
+    // somebody has resized or moved since we created it is carrying their
+    // work now, and deleting the object would break their structured
+    // references (Table1[Revenue] and the like) across the workbook.
+    if (expectRange !== undefined && !force) {
+      const range = table.getRange();
+      range.load("address");
+      await context.sync();
+      // address comes back as "Sheet1!A1:D10"; compare the range part only.
+      const address = typeof range.address === "string" ? range.address : "";
+      const current = (address.includes("!") ? address.split("!")[1]! : address).toUpperCase();
+      if (current !== "" && current !== expectRange) {
+        return {
+          ok: false,
+          message:
+            `Table "${name}" now spans ${current}, not the ${expectRange} this change created ` +
+            `it over — somebody has resized it. Removing the table would break their ` +
+            `structured references, so it was left alone.`,
+        };
+      }
+    }
+
     // delete() removes the table object; the cells stay, and the cell rollback
     // has already put their prior contents back.
     table.delete();

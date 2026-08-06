@@ -19,7 +19,7 @@
  * rollback was complete.
  */
 
-import { Workbook } from "../model/workbook";
+import { Workbook, a1Range } from "../model/workbook";
 import { Edit, StructuralEdit, isCellEdit } from "./types";
 
 export type CompensatingOp =
@@ -42,7 +42,17 @@ export type CompensatingOp =
       comment?: string;
       expectRefersTo: string;
     }
-  | { kind: "deleteTable"; name: string; sheet: string }
+  | {
+      kind: "deleteTable";
+      name: string;
+      sheet: string;
+      /**
+       * The range the table was created over. If the live table now spans a
+       * different range, somebody has resized or moved it since — deleting the
+       * table object would break their structured references, so it stays.
+       */
+      expectRange?: string;
+    }
   | { kind: "none"; describes: string; reason: string };
 
 /** Packed (row, col) so a sheet's cell set is cheap to compare. */
@@ -165,7 +175,12 @@ function planOne(
         };
       }
       state.createdTables.add(key);
-      return { kind: "deleteTable", name: edit.name, sheet: edit.sheet ?? "" };
+      return {
+        kind: "deleteTable",
+        name: edit.name,
+        sheet: edit.sheet ?? "",
+        ...(edit.range ? { expectRange: edit.range.toUpperCase() } : {}),
+      };
     }
   }
 }
@@ -283,6 +298,20 @@ export function applyCompensation(
         const existing = workbook.table(op.name);
         if (!existing) {
           unreversed.push(`Table "${op.name}" is already gone; nothing to remove.`);
+          break;
+        }
+        const currentRange = a1Range(
+          existing.startRow,
+          existing.startCol,
+          existing.endRow,
+          existing.endCol
+        ).toUpperCase();
+        if (op.expectRange !== undefined && currentRange !== op.expectRange && !options.force) {
+          unreversed.push(
+            `Table "${op.name}" now spans ${currentRange}, not the ${op.expectRange} this ` +
+              `change created it over — somebody has resized it. Removing the table would ` +
+              `break their structured references, so it was left alone.`
+          );
           break;
         }
         workbook.removeTable(op.name);
