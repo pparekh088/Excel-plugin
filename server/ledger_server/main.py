@@ -10,7 +10,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import Settings, get_settings
-from .routers import health, sessions, tools
+from .llm import build_gateway
+from .routers import agent, health, sessions, tools
 from .schema_registry import ToolRegistry
 from .sessions import build_session_store
 
@@ -25,6 +26,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         app.state.tool_registry = ToolRegistry.load(settings.schemas_dir)
         app.state.session_store = build_session_store(settings)
+        app.state.llm_gateway = build_gateway()
+        # Per-session cost meters and change-set records. In-process for now;
+        # they move to Redis alongside sessions when the deployment target is
+        # multi-worker (tracked in PROGRESS).
+        app.state.cost_meters = {}
+        app.state.change_sets = {}
         yield
 
     app = FastAPI(title="Ledger Agent API", version="0.0.1", lifespan=lifespan)
@@ -38,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(sessions.router)
     app.include_router(tools.router)
+    app.include_router(agent.router)
     return app
 
 

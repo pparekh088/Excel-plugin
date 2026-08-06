@@ -148,3 +148,31 @@ vitest rather than being built to `dist/` and installed. This guarantees the
 audit logic running in the task pane is byte-identical to the one the eval
 harness scores — the divergence risk D-011 exists to prevent. Cost is a
 slightly slower add-in build; revisit if build time becomes a problem.
+
+## D-019 · The agent runtime lives in the engine, not the server (2026-08-06)
+
+Extends D-011. The plan/execute/verify/repair loop orchestrates components
+that are all deterministic TypeScript — parser, graph, change-set engine,
+verifier, simulator. Running the loop in Python would mean shipping the
+workbook model across the wire on every step, and would fork the logic between
+the live add-in path and the eval harness. The server keeps what genuinely
+belongs to it: sessions, auth, the LLM gateway with routing and cost metering,
+and the durable record of every change set that touched a workbook.
+
+## D-020 · Formula translation goes through the parser, never a regex (2026-08-06)
+
+Filling a formula shifts its relative references. The obvious implementation
+is a regex over `[A-Za-z]{1,3}[0-9]+`, and it is wrong: that pattern matches
+`eet2` inside `Sheet2!B5`, so filling `=Sheet2!B5` produced `=ShEET5!B8`.
+Translation now walks the parsed AST, which makes absolute anchors, defined
+names, string literals and sheet prefixes untouchable by construction. Recorded
+because the temptation to string-manipulate a formula will recur, and the
+answer is always no.
+
+## D-021 · The verifier reconciles only the last edit per cell (2026-08-06)
+
+A repair round legitimately overwrites what the first attempt wrote. Checking
+every historical edit against the final state reported the superseded edit as
+a permanent plan mismatch, so the repair loop could never converge and every
+run ended in a rollback offer. The net effect of a change set is what the user
+approved and what must be verified.
