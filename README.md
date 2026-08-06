@@ -57,7 +57,7 @@ a silent one.
 | WIL build, 500k formulas | < 30s, < 500MB | **19.1s**, **221MB** retained |
 | 5k-cell `AI.CLASSIFY` drag | under budget | **150** calls, free on re-run |
 
-Tests: engine **1149**, add-in **46**, server **92**. See `PROGRESS.md` for
+Tests: engine **1162**, add-in **52**, server **92**. See `PROGRESS.md` for
 the full picture including the sideload checklist — the work that genuinely
 needs a live Excel host and has not been run.
 
@@ -86,7 +86,7 @@ docs/gates/       One report per phase, with measured numbers and open items
 ```bash
 npm ci                      # engine + addin (npm workspaces)
 
-npm test -w engine          # 1149 tests
+npm test -w engine          # 1162 tests
 npm run eval:audit -w engine  # precision/recall against the corpus
 npm run eval:edit  -w engine  # agent edit tasks, cells-destroyed
 npm run eval:aifn  -w engine  # AI budget + cache gates
@@ -136,7 +136,7 @@ These are not aspirations; they are enforced and tested.
 
 ## Documentation
 
-- `DECISIONS.md` — 28 logged decisions and deviations, with reasoning
+- `DECISIONS.md` — 29 logged decisions and deviations, with reasoning
 - `PLATFORM_QUIRKS.md` — Office.js behaviour traps (product IP)
 - `PROGRESS.md` — status, gate results, sideload checklist, known gaps
 - `docs/gates/phase-{0..5}.md` — per-phase reports including what failed first

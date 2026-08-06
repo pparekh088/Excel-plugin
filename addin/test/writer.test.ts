@@ -159,7 +159,7 @@ function installOfficeFake(): void {
       // Office.js resolves isNullObject at load()/sync() time and it stays put
       // afterwards — it is not a live view of the workbook.
       sheet.isNullObject = !sheetExists(name);
-      (sheet as { load: unknown }).load = vi.fn(() => {
+      (sheet as unknown as { load: unknown }).load = vi.fn(() => {
         sheet.isNullObject = !sheetExists(name);
       });
       return sheet;

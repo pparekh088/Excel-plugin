@@ -324,3 +324,43 @@ classifier passes the approved change set's snapshots.
 
 There is deliberately no "never ask" setting. `repairApproval: "always"` exists
 for callers who want every fix confirmed; the in-scope default is the floor.
+
+## D-029 · The agent loop runs on a WorkbookHost, not on a Workbook (2026-08-06)
+
+The agent loop was written directly against the in-memory model and our own
+evaluator. That made CI possible and made its results weaker than they looked:
+every gate in this repo — 100% edit success, zero cells destroyed, byte-identical
+rollback — was proved against the SIMULATOR, and the simulator is our model of
+Excel, not Excel. The loop had no way to run in a real workbook at all.
+
+`WorkbookHost` is the seam: read, checkDrift, apply, refresh, rollback.
+`SimulatorWorkbookHost` is what CI exercises; `OfficeJsWorkbookHost` is what
+ships. `runAgent` still accepts a bare `Workbook` and wraps it in the simulator
+host, so every existing test and eval is unchanged.
+
+The step that matters is `refresh`. Verification used to run against our own
+model immediately after we wrote to it, which proves the model self-consistent
+and nothing else. It now runs against whatever the host reports AFTER
+recalculating. On Office.js that is a real re-extraction, so verification can
+catch the failures that only exist in the real host: value coercion on write,
+implicit intersection, and a table's calculated column rewriting our formula
+(Q-010). Those are exactly the ones a user would describe as "the agent broke
+my workbook", and no amount of simulator testing can find them.
+
+It re-extracts the whole workbook rather than re-reading the touched cells,
+because verification is about blast radius — a formula we wrote can put #REF!
+three sheets away. It is the expensive step of a run; the chunked extractor
+keeps it inside the INV-5 budget.
+
+Hosts also declare `capabilities`, and `RunResult` carries `host`. A pass on
+the simulator and a pass on Excel are different claims, so the transcript ends
+with which one it was, in words: "verified against the headless simulator,
+which is our model of Excel, not Excel".
+
+New outcome `write-failed`: the host can now refuse (protected sheet, drift
+detected live), and the loop reports that rather than proceeding to verify a
+write that never happened.
+
+The limit worth stating: the Office.js host is covered by a fake in tests, and
+a fake cannot reproduce the very behaviours that justify the abstraction.
+Sideload checklist item 13 is the only thing that closes it.

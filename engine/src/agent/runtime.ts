@@ -14,13 +14,7 @@
 
 import { runAudit } from "../audit/engine";
 import { BalanceAssertion } from "../audit/types";
-import {
-  applyToWorkbook,
-  checkDrift,
-  explainChangeSet,
-  proposeChangeSet,
-  rollback,
-} from "../changeset/engine";
+import { explainChangeSet, proposeChangeSet } from "../changeset/engine";
 import { checkHazards, describeHazards } from "../changeset/hazards";
 import {
   CellSnapshot,
@@ -30,11 +24,12 @@ import {
   isCellEdit,
 } from "../changeset/types";
 import { DependencyGraph } from "../graph/graph";
+import { SimulatorWorkbookHost } from "../host/simulator";
+import { HostKind, WorkbookHost, describeHost } from "../host/types";
 import { Workbook } from "../model/workbook";
 import type { CellAddr, Node as AstNode } from "../parser/ast";
 import { parseFormula } from "../parser/parser";
 import { toFormulaText } from "../parser/serialize";
-import { Simulator } from "../sim/simulator";
 import { buildWil } from "../wil/serialize";
 import { CostMeter, LlmProvider, TaskClass, tierFor } from "./llm";
 import { Plan, isAutoApprovable, parsePlan, renderPlan } from "./plan";
@@ -94,10 +89,17 @@ export type RunOutcome =
   | "blocked-hazard"
   | "rolled-back"
   | "plan-failed"
+  | "write-failed"
   | "no-op";
 
 export interface RunResult {
   outcome: RunOutcome;
+  /**
+   * Which host the run — and therefore the verification — actually ran
+   * against. A pass on the simulator is a weaker claim than a pass on Excel,
+   * so anything reporting a RunResult can say which it was.
+   */
+  host?: HostKind;
   plan?: Plan;
   changeSet?: ChangeSet;
   verification?: VerificationResult;
@@ -203,9 +205,15 @@ export function buildPlannerMessages(
 }
 
 export async function runAgent(
-  workbook: Workbook,
+  target: Workbook | WorkbookHost,
   options: RunOptions
 ): Promise<RunResult> {
+  // A raw Workbook means "run against the simulator" — the shape every eval,
+  // test and CI run uses. Production passes an OfficeJsWorkbookHost instead,
+  // and the loop below cannot tell the difference except where it asks.
+  const host: WorkbookHost =
+    target instanceof Workbook ? new SimulatorWorkbookHost(target) : target;
+  const workbook = await host.read();
   const transcript: string[] = [];
   const costMeter = options.costMeter ?? new CostMeter();
   const maxRepairs = options.maxRepairs ?? 3;
@@ -214,6 +222,7 @@ export async function runAgent(
 
   const finish = (outcome: RunOutcome, extra: Partial<RunResult> = {}): RunResult => ({
     outcome,
+    host: host.kind,
     repairAttempts,
     transcript,
     costUsd: costMeter.totalCostUsd,
@@ -312,7 +321,8 @@ export async function runAgent(
   }
 
   // ---- 6. drift check (INV-8) -----------------------------------------
-  const drift = checkDrift(workbook, changeSet);
+  const driftEntries = await host.checkDrift(changeSet);
+  const drift = { clean: driftEntries.length === 0, entries: driftEntries };
   if (!drift.clean) {
     changeSet.status = "aborted";
     changeSet.failureReason = "Workbook changed since the plan was made.";
@@ -328,12 +338,21 @@ export async function runAgent(
   const preExistingErrors = errorCellSet(workbook);
   const cyclesBefore = graph.stats.cycleCount;
 
-  applyToWorkbook(workbook, changeSet);
+  const applyOutcome = await host.apply(changeSet);
+  if (!applyOutcome.ok) {
+    changeSet.status = "failed";
+    changeSet.failureReason = applyOutcome.failure ?? "The host refused the write.";
+    transcript.push(applyOutcome.failure ?? "The write failed.");
+    return finish("write-failed", { plan, changeSet });
+  }
   changeSet.status = "applied";
   changeSet.appliedAt = (options.now ?? (() => new Date().toISOString()))();
-  Simulator.of(workbook).recalculate();
 
-  let verification = verify(workbook, changeSet, {
+  // Verify against what the HOST holds after recalculating, not against our
+  // own idea of it. On Office.js that is a real re-read, which is the only
+  // thing that catches a coercion or a calculated column rewriting us.
+  let verified = await host.refresh(changeSet);
+  let verification = verify(verified, changeSet, {
     preExistingErrors,
     assertions: options.assertions,
     cyclesBefore,
@@ -416,11 +435,11 @@ export async function runAgent(
       summary: repairPlan.plan.summary,
       edits: repairEdits,
     });
-    applyToWorkbook(workbook, repairSet);
-    Simulator.of(workbook).recalculate();
+    await host.apply(repairSet);
 
     changeSet = mergeChangeSets(changeSet, repairSet);
-    verification = verify(workbook, changeSet, {
+    verified = await host.refresh(changeSet);
+    verification = verify(verified, changeSet, {
       preExistingErrors,
       assertions: options.assertions,
       cyclesBefore,
@@ -441,8 +460,7 @@ export async function runAgent(
       text: `Roll back this change set?\n\n${explanation}`,
     });
     if (decision === "approve") {
-      const report = rollback(workbook, changeSet);
-      Simulator.of(workbook).recalculate();
+      const report = await host.rollback(changeSet);
       changeSet.status = "rolled-back";
       changeSet.rolledBackAt = (options.now ?? (() => new Date().toISOString()))();
       transcript.push(
@@ -481,6 +499,9 @@ export async function runAgent(
   }
 
   transcript.push(explanation);
+  // Say what the pass is worth. On CI this reads "against the headless
+  // simulator, which is our model of Excel, not Excel".
+  transcript.push(`Checks passed — ${describeHost(host)}.`);
   return finish("applied", { plan, changeSet, verification, explanation });
 }
 

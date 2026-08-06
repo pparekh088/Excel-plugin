@@ -1,7 +1,10 @@
 # Progress
 
 All six phases (0–5) are implemented and their gates measured. Every gate that
-can be measured without Excel passes. The items that genuinely require a live
+can be measured without Excel passes — and "without Excel" is doing real work
+in that sentence: the gates run against the headless simulator, which is our
+model of Excel rather than Excel itself (D-029). Sideload item 15 is what
+converts them into claims about the real host. The items that genuinely require a live
 Excel host are listed in **§ Sideload checklist** below and in each phase's
 gate report — they are the honest remainder, not hidden.
 
@@ -9,9 +12,9 @@ gate report — they are the honest remainder, not hidden.
 
 | Package | Tests | Typecheck | Lint |
 | --- | --- | --- | --- |
-| `engine/` | **1090** | clean | — |
-| `addin/` | **36** | clean | — |
-| `server/` | **56** | — | ruff clean |
+| `engine/` | **1162** | clean | — |
+| `addin/` | **52** | clean | — |
+| `server/` | **92** | — | ruff clean |
 
 | Eval | Gate | Result |
 | --- | --- | --- |
@@ -67,6 +70,12 @@ on Windows/Mac plus a browser for Excel web.
 13. **Merged cells / protected sheets**: confirm whether Office.js throws or
     silently ignores; record in `PLATFORM_QUIRKS.md`.
 14. Mac-specific: mixed content (https task pane → http backend), Q-005.
+15. **Agent loop end to end on the real host**: drive `runAgent` with an
+    `OfficeJsWorkbookHost` against a live workbook and confirm verification
+    reads back what Excel actually stored. This is the item that turns every
+    gate below from "proved against our simulator" into "proved against
+    Excel" — specifically coercion on write, implicit intersection, and a
+    table calculated column rewriting a formula we set (Q-010, D-029).
 
 ## Known gaps and deferred work
 
