@@ -9,11 +9,14 @@ import {
   MessageBar,
   MessageBarBody,
   Spinner,
+  Tab,
+  TabList,
   Text,
   Title3,
   makeStyles,
   tokens,
 } from "@fluentui/react-components";
+import { AuditPanel } from "./AuditPanel";
 import { APP_NAME, PHASE, getBackendUrl } from "../config";
 import { createAuthProvider } from "../auth/provider";
 import { ApiError, LedgerClient, type Health } from "../api/client";
@@ -86,6 +89,7 @@ export function App({ hostReady }: Props) {
   const [include, setInclude] = useState<RangeReadInclude[]>(["values", "formulas"]);
   const [running, setRunning] = useState(false);
   const [output, setOutput] = useState<string>("");
+  const [tab, setTab] = useState<"audit" | "tools">("audit");
 
   const connect = useCallback(async () => {
     setBackend({ kind: "checking" });
@@ -147,6 +151,15 @@ export function App({ hostReady }: Props) {
         <Badge appearance="outline">{PHASE}</Badge>
       </div>
 
+      <TabList selectedValue={tab} onTabSelect={(_, data) => setTab(data.value as "audit" | "tools")}>
+        <Tab value="audit">Audit</Tab>
+        <Tab value="tools">Tools</Tab>
+      </TabList>
+
+      {tab === "audit" && <AuditPanel hostReady={hostReady} />}
+
+      {tab === "tools" && (
+        <>
       {!hostReady && (
         <MessageBar intent="warning">
           <MessageBarBody>
@@ -225,6 +238,8 @@ export function App({ hostReady }: Props) {
       </div>
 
       {output && <div className={styles.output}>{output}</div>}
+        </>
+      )}
     </div>
   );
 }

@@ -13,7 +13,10 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["office-js", "node"]
+    "types": ["office-js", "node"],
+    "paths": {
+      "ledger-engine": ["../engine/src/index.ts"]
+    }
   },
   "include": ["src", "test", "scripts"]
 }

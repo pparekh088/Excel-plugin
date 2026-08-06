@@ -15,6 +15,11 @@ export * from "./graph/graph";
 export * from "./wil/semantic";
 export * from "./wil/serialize";
 
+export * from "./audit/types";
+export * from "./audit/rules";
+export * from "./audit/balance";
+export * from "./audit/engine";
+
 export * from "./sim/evaluator";
 export * from "./sim/simulator";
 

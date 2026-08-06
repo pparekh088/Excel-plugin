@@ -122,3 +122,29 @@ The headless evaluator implements the ~60 functions the corpus uses. Rather
 than returning 0 for anything else, unsupported functions yield `#NAME?` and
 are listed in `recalculate().unsupportedFunctions`, so an eval that outgrows
 the evaluator fails loudly instead of silently scoring against a wrong value.
+
+## D-016 · AUD-012+ judgment rules deferred to Phase 3 (2026-08-06)
+
+The model-risk heuristics (growth > threshold, negative margins, terminal
+assumptions) are the only LLM-assisted rules in §6. Shipping them in Phase 2
+would put an LLM dependency inside the wedge feature whose entire value
+proposition is running without one — "demo it with the network off" stops
+being true the moment one rule needs a model. They land in Phase 3 alongside
+the gateway and cost metering, clearly labelled as judgment rather than fact,
+and opt-in via `AuditScope.includeJudgment`.
+
+## D-017 · "Fix all safe issues" needs the change-set engine (2026-08-06)
+
+Every rule declares an auto-fix risk tier and `safeAutoFixes()` filters to
+LOW, but nothing is applied yet. Applying fixes requires snapshots, preview,
+approval and rollback (INV-2, INV-3). A one-click fix button without those is
+exactly the silent-write failure the invariants exist to prevent, so the
+button ships in Phase 3 with the change-set engine behind it.
+
+## D-018 · The add-in consumes the engine from source, not a built package (2026-08-06)
+
+`ledger-engine` is aliased to `engine/src/index.ts` in webpack, tsconfig and
+vitest rather than being built to `dist/` and installed. This guarantees the
+audit logic running in the task pane is byte-identical to the one the eval
+harness scores — the divergence risk D-011 exists to prevent. Cost is a
+slightly slower add-in build; revisit if build time becomes a problem.

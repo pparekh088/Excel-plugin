@@ -21,13 +21,26 @@ module.exports = async (env, options) => {
       filename: "[name].[contenthash].js",
       clean: true,
     },
-    resolve: { extensions: [".ts", ".tsx", ".js"] },
+    resolve: {
+      extensions: [".ts", ".tsx", ".js"],
+      // The engine is consumed from source so the add-in and the eval harness
+      // always run byte-identical audit logic (see DECISIONS D-011).
+      alias: { "ledger-engine": path.resolve(__dirname, "../engine/src/index.ts") },
+    },
     module: {
       rules: [
         {
           test: /\.tsx?$/,
           exclude: /node_modules/,
-          use: { loader: "ts-loader", options: { compilerOptions: { noEmit: false } } },
+          use: {
+            loader: "ts-loader",
+            options: {
+              compilerOptions: { noEmit: false },
+              // Engine sources live outside this package's rootDir.
+              transpileOnly: false,
+              onlyCompileBundledFiles: true,
+            },
+          },
         },
       ],
     },
