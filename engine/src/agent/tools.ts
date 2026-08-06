@@ -579,7 +579,9 @@ export const TOOLS: ToolSpec[] = [
     access: "control",
     risk: "none",
     description:
-      "Apply a previewed and approved change set atomically, with calculation suspended, " +
+      "Apply a previewed and approved change set as one operation, with calculation "
+      + "suspended. Not a transaction — a failure partway is recovered by restoring the "
+      + "snapshot and reversing structural edits, and that recovery is reported. " +
       "after a drift check. Never partially applies.",
     params: { changeSetId: "id" },
   },

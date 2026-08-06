@@ -57,7 +57,9 @@ clean in both TypeScript packages; ruff clean; production build succeeds.
   change set exists. Tested with a plan emitting `shell.exec` and one emitting
   `vba.run` — both refused, workbook untouched.
 - **INV-2 (no silent writes):** the runtime asks for approval twice — once on
-  the plan, once on the previewed diff — and applies one change set atomically.
+  the plan, once on the previewed diff — and applies one change set as a single
+  operation. Not atomically in the transactional sense: see D-027 for what a
+  partial failure actually does.
   Trusted-session mode skips prompting only when *every* step is LOW risk;
   tested that a HIGH-risk plan still prompts in a trusted session.
 - **INV-3 (snapshot before write):** snapshots capture value, formula and

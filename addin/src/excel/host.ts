@@ -89,7 +89,7 @@ export class OfficeJsWorkbookHost implements WorkbookHost {
    * It is the expensive step of a run. The chunked extractor keeps it within
    * the INV-5 budget, and it happens once per apply plus once per repair.
    */
-  async refresh(): Promise<Workbook> {
+  async refresh(_changeSet: ChangeSet): Promise<Workbook> {
     return extractWorkbook(this.options.extract);
   }
 

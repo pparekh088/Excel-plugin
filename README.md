@@ -41,10 +41,17 @@ planned before the apply (create→delete, rename→rename back, defineName→re
 the prior definition), because there is no atomic commit in Office.js to lean
 on — this is compensation, and it is described as such.
 
-**Never destroy.** Cells-destroyed is a hard gate at zero. A protected sheet,
-a merged cell, a concurrent edit by a colleague, or a formula the parser does
-not understand each produce a clear refusal — never a partial write and never
-a silent one.
+**Never destroy.** Cells-destroyed is a hard gate at zero across the eval
+corpus. A protected sheet, a merged cell, a concurrent edit by a colleague, or
+a formula the parser does not understand each produce a clear refusal rather
+than a silent write. A write that fails *partway* is a different case: there is
+no transaction to roll back, so the snapshot is restored and the structural
+edits are reversed, and if that recovery cannot complete the add-in says so and
+points at Excel's own undo rather than claiming the workbook is clean.
+
+Two of those refusals — protected sheets and merged cells — depend on the host
+being able to observe them, which the simulator cannot. `WorkbookHost.capabilities`
+carries that distinction so a report never claims a check the host could not run.
 
 ## Results
 

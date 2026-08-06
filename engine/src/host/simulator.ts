@@ -53,7 +53,7 @@ export class SimulatorWorkbookHost implements WorkbookHost {
     };
   }
 
-  async refresh(): Promise<Workbook> {
+  async refresh(_changeSet: ChangeSet): Promise<Workbook> {
     // Same object the writes went into: verification against this proves the
     // model self-consistent, not that Excel agrees. describeHost() says so.
     return this.workbook;

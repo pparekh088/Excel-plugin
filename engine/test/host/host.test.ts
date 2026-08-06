@@ -180,7 +180,7 @@ describe("runAgent through the host seam", () => {
         workbook.sheet("S")!.set({ row: 0, col: 2, value: 0, formula: "=1/0" });
         return outcome;
       },
-      refresh: () => host.refresh(),
+      refresh: (cs: Parameters<typeof host.refresh>[0]) => host.refresh(cs),
       rollback: (cs: Parameters<typeof host.rollback>[0]) => host.rollback(cs),
     };
 
@@ -215,7 +215,7 @@ describe("runAgent through the host seam", () => {
         failure: "Sheet is protected.",
         rolledBack: false,
       }),
-      refresh: () => host.refresh(),
+      refresh: (cs: Parameters<typeof host.refresh>[0]) => host.refresh(cs),
       rollback: (cs: Parameters<typeof host.rollback>[0]) => host.rollback(cs),
     };
 

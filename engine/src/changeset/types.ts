@@ -4,11 +4,17 @@
  * Every mutation the agent makes goes through a change set:
  *   propose -> preview (diff + impact) -> approve -> drift check -> apply -> log
  *
- * A change set is never partially applied. Before applying, the prior state of
- * every touched cell is captured (values, formulas, number formats) so
- * rollback can restore it — and rollback reports honestly what it cannot
- * restore, because pivot caches, chart internals and conditional-format stacks
- * are not fully recoverable through the API.
+ * A change set is the unit of approval and the unit of undo. It is applied as
+ * one operation from the user's point of view, but the host provides no
+ * transaction: a partial write is recovered by restoring the snapshot and
+ * running the planned structural inverses, which is compensation rather than
+ * rollback in the database sense.
+ *
+ * Before applying, the prior state of every touched cell is captured (values,
+ * formulas, number formats) so rollback can restore it. Rollback reports
+ * honestly what it could NOT restore: pivot caches, chart internals and
+ * conditional-format stacks are not fully recoverable through the API, and a
+ * cell somebody edited after we applied is deliberately left alone.
  */
 
 import { CellValue } from "../model/workbook";

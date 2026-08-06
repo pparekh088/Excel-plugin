@@ -6,8 +6,14 @@
  *     -> approval -> drift check (INV-8) -> apply -> recalculate
  *     -> VERIFIER -> repair loop (<=3) -> rollback offer -> EXPLAIN
  *
- * The runtime never partially applies: every step contributes edits to a
- * single change set which is applied atomically or not at all (INV-2).
+ * Every step contributes edits to ONE change set, so the user approves one
+ * thing and one rollback undoes it. That is not the same as atomicity, and
+ * the difference is worth being precise about: Office.js has no transaction
+ * to enrol in, so a write that fails partway is recovered by restoring the
+ * snapshot and running the structural inverses (D-027), not by a rollback the
+ * host performs for us. The recovery can itself fail, and says so when it
+ * does.
+ *
  * Rollback is offered — and its fidelity honestly reported — whenever
  * verification fails after the repair budget is exhausted.
  */
