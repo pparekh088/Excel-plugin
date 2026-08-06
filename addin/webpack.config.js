@@ -1,5 +1,6 @@
 /* eslint-disable no-undef */
 const path = require("path");
+const webpack = require("webpack");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
 const CopyWebpackPlugin = require("copy-webpack-plugin");
 
@@ -50,6 +51,22 @@ module.exports = async (env, options) => {
       ],
     },
     plugins: [
+      // Auth configuration reaches the bundle here. createAuthProvider REFUSES
+      // to fall back to unauthenticated requests when NODE_ENV is production
+      // and these are unset, so a misconfigured production build fails loudly
+      // rather than shipping an add-in that talks to a real API anonymously.
+      new webpack.DefinePlugin({
+        "process.env.NODE_ENV": JSON.stringify(dev ? "development" : "production"),
+        "process.env.LEDGER_ENTRA_CLIENT_ID": JSON.stringify(
+          process.env.LEDGER_ENTRA_CLIENT_ID ?? ""
+        ),
+        "process.env.LEDGER_ENTRA_TENANT_ID": JSON.stringify(
+          process.env.LEDGER_ENTRA_TENANT_ID ?? ""
+        ),
+        "process.env.LEDGER_ENTRA_API_CLIENT_ID": JSON.stringify(
+          process.env.LEDGER_ENTRA_API_CLIENT_ID ?? ""
+        ),
+      }),
       new HtmlWebpackPlugin({
         filename: "taskpane.html",
         template: "./src/taskpane/taskpane.html",
@@ -73,9 +90,25 @@ module.exports = async (env, options) => {
             from: "manifest.xml",
             to: "manifest.xml",
             transform(content) {
-              return dev
-                ? content
-                : content.toString().replace(new RegExp(urlDev, "g"), urlProd);
+              let text = content.toString();
+              if (!dev) text = text.replace(new RegExp(urlDev, "g"), urlProd);
+              // WebApplicationInfo carries the Entra registration IDs; they are
+              // placeholders in the checked-in manifest (D-006) and filled in
+              // at package time from the deploying tenant's environment.
+              const addinId = process.env.LEDGER_ENTRA_CLIENT_ID;
+              const apiId = process.env.LEDGER_ENTRA_API_CLIENT_ID ?? addinId;
+              if (addinId) {
+                text = text
+                  .replace(
+                    "<Id>00000000-0000-0000-0000-000000000000</Id>",
+                    `<Id>${addinId}</Id>`
+                  )
+                  .replace(
+                    "<Resource>api://localhost:8000/00000000-0000-0000-0000-000000000000</Resource>",
+                    `<Resource>api://${apiId}/access</Resource>`
+                  );
+              }
+              return Buffer.from(text);
             },
           },
         ],

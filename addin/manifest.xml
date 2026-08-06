@@ -20,8 +20,18 @@
   <Requirements>
     <Sets DefaultMinVersion="1.1">
       <Set Name="ExcelApi" MinVersion="1.7" />
+      <!-- Shared runtime: one JS context for task pane, commands and custom
+           functions, so AI.* can use the task pane's token (P1-6). -->
+      <Set Name="SharedRuntime" MinVersion="1.1" />
     </Sets>
   </Requirements>
+  <!--
+    WebApplicationInfo declares the add-in's Entra registration so the host can
+    broker tokens for it (NAA). Id is the add-in SPA registration; Resource is
+    the API registration the backend validates as its audience. Both are
+    placeholders until the pilot tenant's real IDs are issued (D-006) — the
+    build substitutes them from LEDGER_ENTRA_* at package time.
+  -->
   <DefaultSettings>
     <SourceLocation DefaultValue="https://localhost:3000/taskpane.html" />
   </DefaultSettings>
@@ -29,8 +39,25 @@
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
     <Hosts>
       <Host xsi:type="Workbook">
+        <!--
+          SHARED RUNTIME. The task pane, the ribbon commands and the AI.*
+          custom functions all run in ONE JavaScript context, pointed at the
+          task pane page.
+
+          This is not a performance choice. Custom functions must send a bearer
+          token, and acquiring one is an interactive flow that belongs to the
+          task pane. In separate runtimes the functions runtime has no access
+          to the task pane's token cache and no way to run that flow, so every
+          AI.* cell would fail against an authenticated backend. A shared
+          runtime gives them the same module instance and therefore the same
+          cached token (P1-6).
+
+          Requires the SharedRuntime 1.1 requirement set below; on hosts
+          without it the add-in falls back to separate runtimes and AI.*
+          functions only work against a dev-mode backend.
+        -->
         <Runtimes>
-          <Runtime resid="Commands.Url" lifetime="long" />
+          <Runtime resid="Taskpane.Url" lifetime="long" />
         </Runtimes>
         <AllFormFactors>
           <ExtensionPoint xsi:type="CustomFunctions">
@@ -38,7 +65,7 @@
               <SourceLocation resid="Functions.Script.Url" />
             </Script>
             <Page>
-              <SourceLocation resid="Functions.Page.Url" />
+              <SourceLocation resid="Taskpane.Url" />
             </Page>
             <Metadata>
               <SourceLocation resid="Functions.Metadata.Url" />
@@ -109,5 +136,14 @@
         <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open the Ledger task pane" />
       </bt:LongStrings>
     </Resources>
+    <WebApplicationInfo>
+      <Id>00000000-0000-0000-0000-000000000000</Id>
+      <Resource>api://localhost:8000/00000000-0000-0000-0000-000000000000</Resource>
+      <Scopes>
+        <Scope>openid</Scope>
+        <Scope>profile</Scope>
+        <Scope>access</Scope>
+      </Scopes>
+    </WebApplicationInfo>
   </VersionOverrides>
 </OfficeApp>

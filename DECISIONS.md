@@ -364,3 +364,47 @@ write that never happened.
 The limit worth stating: the Office.js host is covered by a fake in tests, and
 a fake cannot reproduce the very behaviours that justify the abstraction.
 Sideload checklist item 13 is the only thing that closes it.
+
+## D-030 · Custom functions authenticate, via a shared runtime (2026-08-06)
+
+`AI.*` custom functions posted to `/api/v1/ai/batch` with no Authorization
+header at all. Against a dev-mode backend that works perfectly, which is
+exactly why it survived review: the failure only appears when the backend is
+switched to `auth_mode=entra`, and then every AI.* cell in every workbook fails
+at once with nothing to tell the user why.
+
+Fixing it needed three things, and the middle one is the reason this was not a
+one-line change.
+
+**A real provider.** `NaaAuthProvider` uses MSAL's
+`createNestablePublicClientApplication`. Nested App Authentication lets an
+add-in acquire tokens through the Office host's identity broker — no popup, no
+second sign-in — scoped to the API's app registration, which is the audience
+the backend validates. Tokens are cached with a five-minute skew margin because
+a recalculation issues many batches and each was otherwise an MSAL round trip.
+
+**A shared runtime.** Custom functions run in a separate JavaScript context
+from the task pane by default. Acquiring a token is an interactive flow that
+belongs to the task pane, and a separate runtime can reach neither the flow nor
+its token cache. The manifest now declares one runtime, pointed at the task
+pane page, with the `SharedRuntime 1.1` requirement set — so both share a
+module instance and therefore the cache. On a host without shared-runtime
+support the add-in still loads, and AI.* works only against a dev backend.
+
+**No silent downgrade.** `createAuthProvider` THROWS when the build is a
+production build and no registration is configured, rather than returning the
+dev provider. A silent fallback to "no token" is how an add-in ends up talking
+to a production API anonymously, and it looks like a working system right up
+until it is not. The server has the mirror-image guard already: it refuses to
+start with `auth_mode=dev` under `LEDGER_ENV=production`.
+
+A 401 or 403 from the batch endpoint is reported as "sign in from the Ledger
+task pane, then recalculate" rather than as a generic backend error. The
+distinction between "the model failed" and "you are not signed in" is the
+difference between something the user can act on and something they cannot.
+
+Still open: the registration IDs are placeholders (D-006). The manifest's
+`WebApplicationInfo` and the bundle's client IDs are substituted at package
+time from `LEDGER_ENTRA_*`, so a pilot tenant supplies them without a code
+change — but nothing here has been exercised against a real Entra tenant, and
+NAA availability varies by Office build. Sideload item 16.

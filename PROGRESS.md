@@ -13,7 +13,7 @@ gate report — they are the honest remainder, not hidden.
 | Package | Tests | Typecheck | Lint |
 | --- | --- | --- | --- |
 | `engine/` | **1162** | clean | — |
-| `addin/` | **52** | clean | — |
+| `addin/` | **65** | clean | — |
 | `server/` | **92** | — | ruff clean |
 
 | Eval | Gate | Result |
@@ -76,11 +76,21 @@ on Windows/Mac plus a browser for Excel web.
     gate below from "proved against our simulator" into "proved against
     Excel" — specifically coercion on write, implicit intersection, and a
     table calculated column rewriting a formula we set (Q-010, D-029).
+16. **Authenticated AI.* functions**: with `LEDGER_ENTRA_*` set and the backend
+    on `auth_mode=entra`, confirm NAA acquires a token silently through the
+    host, that the SHARED RUNTIME lets the custom-functions context reuse the
+    task pane's cached token, and that `=AI.CLASSIFY(...)` succeeds. Then
+    confirm a signed-out state shows the "sign in" message rather than a
+    generic failure (D-030). Nothing in this path has run against a real Entra
+    tenant, and NAA support varies by Office build.
 
 ## Known gaps and deferred work
 
-- **Entra/NAA auth** is implemented but needs the org's real app-registration
-  IDs. Dev mode is guarded so it cannot reach production (D-006).
+- **Entra/NAA auth** is implemented end to end — task pane and custom
+  functions, shared runtime, token cache, production build refusing to fall
+  back to anonymous (D-030) — but needs the org's real app-registration IDs and
+  has never run against a live tenant. Dev mode is guarded on both sides so it
+  cannot reach production (D-006).
 - **AUD-012 model-risk judgment rules** are deferred (D-016). They are the only
   LLM-assisted rules; shipping them earlier would have put a model dependency
   inside the zero-LLM wedge.

@@ -11,6 +11,7 @@
  */
 
 import { AiCoordinator, BUDGET_ERROR, type AiRequest } from "ledger-engine";
+import { createAuthProvider } from "../auth/provider";
 import { getBackendUrl } from "../config";
 
 /* global CustomFunctions */
@@ -24,13 +25,38 @@ interface BatchResponse {
 /** Marks AI-derived cells so the audit engine can inventory them (§8). */
 const AI_CELL_MARKER = "AI:";
 
+/**
+ * The custom-functions runtime is a separate JavaScript context from the task
+ * pane unless the manifest declares a SHARED runtime — which ours does. With
+ * it, this module and the task pane are the same instance, so the token cache
+ * is shared and a recalculation does not re-acquire per batch.
+ *
+ * These calls used to go out with no Authorization header at all. Against a
+ * backend in dev mode that works, which is exactly why it survived: the moment
+ * the backend runs LEDGER_AUTH_MODE=entra, every AI.* cell in every workbook
+ * returns an error, and the add-in has no way to say why.
+ */
+const auth = createAuthProvider();
+
 async function callBackend(requests: AiRequest[]): Promise<Array<string | number | boolean>> {
+  const token = await auth.getAccessToken();
   const response = await fetch(`${getBackendUrl()}/api/v1/ai/batch`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({ requests }),
   });
   if (!response.ok) {
+    // 401 is worth naming: it is the difference between "the model failed" and
+    // "you are not signed in", and the user can only act on the second.
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(
+        `AI backend rejected the request (${response.status}) — sign in from the Ledger ` +
+          `task pane, then recalculate.`
+      );
+    }
     throw new Error(`AI backend returned ${response.status}`);
   }
   const body = (await response.json()) as BatchResponse;

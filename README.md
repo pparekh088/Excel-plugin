@@ -57,7 +57,7 @@ a silent one.
 | WIL build, 500k formulas | < 30s, < 500MB | **19.1s**, **221MB** retained |
 | 5k-cell `AI.CLASSIFY` drag | under budget | **150** calls, free on re-run |
 
-Tests: engine **1162**, add-in **52**, server **92**. See `PROGRESS.md` for
+Tests: engine **1162**, add-in **65**, server **92**. See `PROGRESS.md` for
 the full picture including the sideload checklist — the work that genuinely
 needs a live Excel host and has not been run.
 
@@ -136,7 +136,7 @@ These are not aspirations; they are enforced and tested.
 
 ## Documentation
 
-- `DECISIONS.md` — 29 logged decisions and deviations, with reasoning
+- `DECISIONS.md` — 30 logged decisions and deviations, with reasoning
 - `PLATFORM_QUIRKS.md` — Office.js behaviour traps (product IP)
 - `PROGRESS.md` — status, gate results, sideload checklist, known gaps
 - `docs/gates/phase-{0..5}.md` — per-phase reports including what failed first
