@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  engine:
+    name: Engine (parser, graph, audit, agent)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck -w engine
+      - run: npm test -w engine
+
+      # The gates, run on every push so a regression fails the build rather
+      # than being discovered in a demo.
+      - name: Gate — audit precision >= 95%
+        run: npm run eval:audit -w engine
+      - name: Gate — edit success >= 85%, cells destroyed = 0
+        run: npm run eval:edit -w engine
+      - name: Gate — AI budget and cache hit rate
+        run: npm run eval:aifn -w engine
+
+  addin:
+    name: Add-in
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck -w addin
+      - run: npm test -w addin
+      - run: npm run build -w addin
+
+      # The Zod schemas are the source of truth; shared/schemas is generated.
+      # Regenerate and diff so the two can never drift apart silently.
+      - name: Check generated schemas are current
+        run: |
+          npm run schemas -w addin
+          git diff --exit-code shared/schemas \
+            || (echo "shared/schemas is stale — run 'npm run schemas -w addin' and commit" && exit 1)
+
+  server:
+    name: Server
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        working-directory: server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        working-directory: server
+        run: ruff check ledger_server tests
+      - name: Test
+        working-directory: server
+        run: pytest
+
+  perf:
+    name: Perf (200k formulas)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      # 200k is the §5 acceptance size; the 500k stress runs on demand since
+      # it takes ~20s and CI runners vary.
+      - name: Gate — WIL build under 30s, retained memory under 500MB
+        run: npm run perf -w engine -- --sheets 20 --rows 2500 --cols 5

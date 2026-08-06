@@ -1,76 +1,128 @@
 # Ledger — autonomous Excel engineering agent
 
 Ledger is an Excel AI add-in built as an **autonomous spreadsheet engineer**,
-not a chat sidebar: it understands entire workbooks (Workbook Intelligence
-Layer), plans and applies changes through reviewed, reversible change sets,
-audits financial models deterministically (zero LLM calls), and verifies its
-own work.
+not a chat sidebar: it understands entire workbooks, audits financial models
+deterministically, plans and applies changes through reviewed and reversible
+change sets, and verifies its own work.
 
-Core invariants (see the handoff + `DECISIONS.md`): the LLM only ever emits
-**schema-validated typed tool calls** (no freeform code against the workbook),
-**no silent writes** (propose → preview → approve → apply → log), snapshots
-before every write, chunked/budgeted I/O, and a deterministic audit engine
-that runs entirely without the LLM.
+The LLM is replaceable. The IP is everything around it.
+
+## What it does
+
+**Audit — the wedge.** Eleven deterministic rules (formula inconsistency,
+hardcodes, broken chains, error blast radius, circular references, balance
+tie-outs, volatile-function overuse, external/opaque reference inventory, and
+more) find real defects in financial models with **zero LLM calls**. That is a
+hard property, asserted in tests and in the eval: the whole audit runs inside
+any compliance boundary with the network to every model provider switched off.
+On an 18-workbook corpus it scores **100% precision and 100% recall**, with
+zero findings on four clean baselines.
+
+**Understand.** A formula parser we wrote ourselves (never `getPrecedents()`)
+feeds a dependency graph where contiguous cells sharing an R1C1 signature
+collapse into one node — 500,000 formulas become 5,000 nodes, which is what
+makes whole-workbook analysis possible at all. The Workbook Intelligence Layer
+serializes that into a token-budgeted summary that leads with what it *cannot*
+see, so the agent never assumes coverage it does not have.
+
+**Change.** Every mutation goes through a change set: propose → preview
+(before/after diff, risk tier, downstream impact) → approve → drift check →
+apply atomically → verify → repair or roll back → explain. Rollback restores
+values, formulas and number formats **byte-identically**, verified across the
+whole corpus, and reports honestly what it cannot restore.
+
+**Never destroy.** Cells-destroyed is a hard gate at zero. A protected sheet,
+a merged cell, a concurrent edit by a colleague, or a formula the parser does
+not understand each produce a clear refusal — never a partial write and never
+a silent one.
+
+## Results
+
+| Gate | Target | Actual |
+| --- | --- | --- |
+| Audit precision | ≥ 95% | **100%** (recall 100%, 0 false positives on clean models) |
+| Edit-task success | ≥ 85% | **100%** |
+| Cells destroyed | 0 | **0** |
+| Rollback fidelity | byte-identical | **exact** across all 18 corpus workbooks |
+| WIL build, 500k formulas | < 30s, < 500MB | **19.1s**, **221MB** retained |
+| 5k-cell `AI.CLASSIFY` drag | under budget | **150** calls, free on re-run |
+
+Tests: engine **1090**, add-in **36**, server **56**. See `PROGRESS.md` for
+the full picture including the sideload checklist — the work that genuinely
+needs a live Excel host and has not been run.
 
 ## Repo layout
 
 ```
-addin/            Office.js add-in — React 18 + Fluent UI v9, TypeScript strict
-  src/tools/      Zod tool schemas (SOURCE OF TRUTH for the typed tool surface)
-  src/excel/      Office.js executors (chunked I/O per INV-5)
-  src/api/        Backend client + tool round-trip orchestration
-  src/taskpane/   Task pane UI
-  manifest.xml    Sideloadable add-in manifest (dev URLs: https://localhost:3000)
-shared/schemas/   Generated JSON Schemas + tool manifest (checked in; `npm run schemas`)
-server/           Agent API — FastAPI, Python >= 3.11
-  ledger_server/  config, auth (dev/Entra), sessions (Redis/in-memory),
-                  schema registry (INV-1 enforcement), tool-call envelope
-docs/gates/       Per-phase acceptance gate reports
-DECISIONS.md      Deviations + consequential choices, with reasoning
-PROGRESS.md       Live phase/status tracker
-PLATFORM_QUIRKS.md Office.js cross-platform behavior notes (product IP)
+engine/           Deterministic TypeScript. No DOM, no Office dependencies.
+  parser/         Formula parser: full en-US grammar, 713 tests, never throws
+  graph/          Dependency graph with range-run collapsing, cycle detection
+  wil/            Semantic mapping, token-budgeted summary, visualizer
+  audit/          AUD-001..013 — the wedge, zero LLM calls
+  changeset/      Snapshot, diff, impact, drift, rollback, hazards
+  agent/          68 typed tools, planner/executor/verifier/repair loop
+  sim/            Headless Excel: evaluator + recalculation, so CI needs no Excel
+  eval/, corpus/  18 workbooks with labelled defects, graders, scoring
+addin/            Office.js task pane (React 18 + Fluent UI, TS strict)
+  src/excel/      Chunked extraction, change-set writer, trace highlighting
+  src/functions/  AI.* custom functions in their own runtime
+server/           FastAPI: sessions, auth, LLM gateway, change-set records, telemetry
+shared/schemas/   Generated JSON Schemas — the cross-language tool contract
+docs/gates/       One report per phase, with measured numbers and open items
 ```
 
-## Quickstart (dev)
-
-Backend:
+## Quickstart
 
 ```bash
+npm ci                      # engine + addin (npm workspaces)
+
+npm test -w engine          # 1090 tests
+npm run eval:audit -w engine  # precision/recall against the corpus
+npm run eval:edit  -w engine  # agent edit tasks, cells-destroyed
+npm run eval:aifn  -w engine  # AI budget + cache gates
+npm run perf       -w engine  # WIL build time and memory
+
 cd server
 uv venv .venv && uv pip install -p .venv/bin/python -e ".[dev]"
-.venv/bin/uvicorn ledger_server.main:app --reload --port 8000
-# tests:
 .venv/bin/pytest
+.venv/bin/uvicorn ledger_server.main:app --reload --port 8000
 ```
 
-Add-in:
+Sideload the add-in:
 
 ```bash
 cd addin
-npm install
-npm test && npm run typecheck   # unit tests (chunk planner, schemas)
-npm run dev-server               # serves https://localhost:3000
-# First run on a new machine: npx office-addin-dev-certs install
+npx office-addin-dev-certs install   # first run on a new machine
+npm run dev-server                   # https://localhost:3000
+npm run start:desktop                # or upload manifest.xml on Excel web
 ```
 
-Sideload:
+The server runs with **no API keys and no provider packages installed** — it
+defaults to a mock LLM provider. The audit engine needs no backend at all.
 
-- **Excel desktop (Win/Mac):** `npm run start:desktop` (registers the manifest
-  and launches Excel), or add `manifest.xml` via Insert → Add-ins → sideload.
-- **Excel web:** open a workbook → Insert → Add-ins → Upload My Add-in →
-  `addin/manifest.xml` (dev server must be running with trusted certs).
+## The invariants
 
-Open the **Ledger** button on the Home tab → task pane shows backend status,
-creates a session, and runs the `range.read` round trip: local Zod parse →
-server-side JSON Schema validation (INV-1) → chunked Office.js read (INV-5) →
-result validated and logged server-side.
+These are not aspirations; they are enforced and tested.
 
-Regenerating tool schemas after editing `addin/src/tools/schemas.ts`:
+- **INV-1** The LLM emits typed tool calls only. Unknown tools are rejected
+  before a change set exists — validated by Zod client-side and by the exported
+  JSON Schema server-side.
+- **INV-2** No silent writes. Propose → preview → approve → apply → log.
+  Trusted-session mode auto-approves only plans that are entirely LOW risk.
+- **INV-3** Snapshot before write; rollback reports what it cannot restore.
+- **INV-4** We build the dependency graph from our own parse, never
+  `getPrecedents()`.
+- **INV-5** Chunked, budgeted I/O — ≤10k cells per sync, tracked objects
+  released.
+- **INV-6** The LLM sees the WIL summary, never a raw grid.
+- **INV-7** AI functions are batched, cached, and hard-capped per recalc cycle.
+- **INV-8** Drift check immediately before apply; a colleague's edit aborts it.
+- **INV-9** Audit, parser, diff and verifier are pure deterministic TypeScript.
+- **INV-10** Every change set produces a plain-language explanation.
 
-```bash
-cd addin && npm run schemas   # writes shared/schemas/, commit the diff
-```
+## Documentation
 
-## Status
-
-Phase 0 (skeleton) — see `PROGRESS.md` and `docs/gates/phase-0.md`.
+- `DECISIONS.md` — 24 logged decisions and deviations, with reasoning
+- `PLATFORM_QUIRKS.md` — Office.js behaviour traps (product IP)
+- `PROGRESS.md` — status, gate results, sideload checklist, known gaps
+- `docs/gates/phase-{0..5}.md` — per-phase reports including what failed first
