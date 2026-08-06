@@ -15,6 +15,21 @@ export interface InjectedDefect {
   rule: string;
   /** "Sheet!A1" of the offending cell. */
   address: string;
+  /**
+   * Other addresses that legitimately satisfy this defect — a cycle finding
+   * may anchor at either member, a run-collapsed finding anchors at the run's
+   * first cell, and a broken assertion surfaces at the check cell rather than
+   * at the edit that broke it.
+   */
+  alsoAcceptable?: string[];
+  /**
+   * Addresses where OTHER rules may legitimately fire because of this
+   * injection — the edit site of a balance break, for instance, genuinely
+   * contains a magic number and breaks its row's fill pattern. Used only to
+   * exclude those findings from the false-positive count, never to satisfy
+   * this defect's own match.
+   */
+  collateral?: string[];
   note: string;
 }
 
@@ -82,8 +97,18 @@ export function threeStatementModel(id = "three-statement"): CorpusWorkbook {
     setValue(workbook, "Assumptions", row, 0, label);
     values.forEach((value, i) => setValue(workbook, "Assumptions", row, 1 + i, value));
   });
+  // Opening balances live in the assumptions block, not baked into formulas —
+  // a clean baseline must be genuinely clean or it cannot measure precision.
   setValue(workbook, "Assumptions", 9, 0, "Opening revenue");
   setValue(workbook, "Assumptions", 9, 1, 100_000);
+  setValue(workbook, "Assumptions", 10, 0, "Opening cash");
+  setValue(workbook, "Assumptions", 10, 1, 25_000);
+  setValue(workbook, "Assumptions", 11, 0, "Opening PP&E");
+  setValue(workbook, "Assumptions", 11, 1, 80_000);
+  setValue(workbook, "Assumptions", 12, 0, "Opening debt");
+  setValue(workbook, "Assumptions", 12, 1, 40_000);
+  setValue(workbook, "Assumptions", 13, 0, "Opening equity");
+  setValue(workbook, "Assumptions", 13, 1, 65_000);
 
   // Income statement.
   setValue(workbook, "IS", 0, 0, "Income statement");
@@ -192,12 +217,17 @@ export function threeStatementModel(id = "three-statement"): CorpusWorkbook {
     // PP&E 80000, debt 40000, equity 65000 — which ties at 105000), so every
     // forecast year balances by construction: the only change to both sides
     // is net income.
+    // Opening balance sheet (cash 25000, AR 0, PP&E 80000, debt 40000,
+    // equity 65000) ties at 105000, so every forecast year balances by
+    // construction: net income is the only change to both sides.
     setValue(
       workbook,
       "BS",
       bsRows.cash,
       col,
-      i === 0 ? `=25000+CF!${letter}6` : `=${prev}${bsRows.cash + 1}+CF!${letter}6`
+      i === 0
+        ? `=Assumptions!$B$11+CF!${letter}6`
+        : `=${prev}${bsRows.cash + 1}+CF!${letter}6`
     );
     setValue(
       workbook,
@@ -212,7 +242,7 @@ export function threeStatementModel(id = "three-statement"): CorpusWorkbook {
       bsRows.ppe,
       col,
       i === 0
-        ? `=80000+IS!${letter}2*Assumptions!${letter}6+IS!${letter}7`
+        ? `=Assumptions!$B$12+IS!${letter}2*Assumptions!${letter}6+IS!${letter}7`
         : `=${prev}${bsRows.ppe + 1}+IS!${letter}2*Assumptions!${letter}6+IS!${letter}7`
     );
     setValue(
@@ -222,14 +252,20 @@ export function threeStatementModel(id = "three-statement"): CorpusWorkbook {
       col,
       `=SUM(${letter}${bsRows.cash + 1}:${letter}${bsRows.ppe + 1})`
     );
-    setValue(workbook, "BS", bsRows.debt, col, i === 0 ? "=40000" : `=${prev}${bsRows.debt + 1}`);
+    setValue(
+      workbook,
+      "BS",
+      bsRows.debt,
+      col,
+      i === 0 ? "=Assumptions!$B$13" : `=${prev}${bsRows.debt + 1}`
+    );
     setValue(
       workbook,
       "BS",
       bsRows.equity,
       col,
       i === 0
-        ? `=65000+IS!${letter}10`
+        ? `=Assumptions!$B$14+IS!${letter}10`
         : `=${prev}${bsRows.equity + 1}+IS!${letter}10`
     );
     setValue(
@@ -310,6 +346,12 @@ export function dcfModel(id = "dcf"): CorpusWorkbook {
   setValue(workbook, "Inputs", 3, 1, 42_000);
   setValue(workbook, "Inputs", 4, 0, "Shares outstanding");
   setValue(workbook, "Inputs", 4, 1, 10_000);
+  setValue(workbook, "Inputs", 5, 0, "D&A % of EBIT");
+  setValue(workbook, "Inputs", 5, 1, 0.08);
+  setValue(workbook, "Inputs", 6, 0, "Capex % of EBIT");
+  setValue(workbook, "Inputs", 6, 1, 0.09);
+  setValue(workbook, "Inputs", 7, 0, "NWC % of EBIT");
+  setValue(workbook, "Inputs", 7, 1, 0.02);
 
   workbook.names.push({ name: "WACC", scope: null, refersTo: "=Inputs!$B$1" });
   workbook.names.push({ name: "TerminalGrowth", scope: null, refersTo: "=Inputs!$B$2" });
@@ -321,9 +363,9 @@ export function dcfModel(id = "dcf"): CorpusWorkbook {
     setValue(workbook, "DCF", 1, col, ebit[i]!);
     setValue(workbook, "DCF", 2, col, `=-${letter}2*Inputs!$B$3`);
     setValue(workbook, "DCF", 3, col, `=${letter}2+${letter}3`);
-    setValue(workbook, "DCF", 4, col, `=${letter}2*0.08`);
-    setValue(workbook, "DCF", 5, col, `=-${letter}2*0.09`);
-    setValue(workbook, "DCF", 6, col, `=-${letter}2*0.02`);
+    setValue(workbook, "DCF", 4, col, `=${letter}2*Inputs!$B$6`);
+    setValue(workbook, "DCF", 5, col, `=-${letter}2*Inputs!$B$7`);
+    setValue(workbook, "DCF", 6, col, `=-${letter}2*Inputs!$B$8`);
     setValue(workbook, "DCF", 7, col, `=SUM(${letter}4:${letter}7)`);
     setValue(workbook, "DCF", 8, col, `=1/(1+WACC)^${i + 1}`);
     setValue(workbook, "DCF", 9, col, `=${letter}8*${letter}9`);

@@ -103,7 +103,11 @@ export function injectRefError(sheet: string, address: string): Injector {
   };
 }
 
-/** AUD-005: close a loop between two cells. */
+/**
+ * AUD-005: close a loop between two cells. The engine reports one finding per
+ * cycle GROUP, anchored at whichever member it reaches first, so both members
+ * are acceptable addresses for the match.
+ */
 export function injectCircular(sheet: string, first: string, second: string): Injector {
   return (workbook) => {
     write(workbook, sheet, first, `=${second}+1`);
@@ -112,6 +116,7 @@ export function injectCircular(sheet: string, first: string, second: string): In
       {
         rule: "AUD-005",
         address: `${sheet}!${first}`,
+        alsoAcceptable: [`${sheet}!${second}`],
         note: `circular reference ${first} <-> ${second}`,
       },
     ];
@@ -136,19 +141,33 @@ export function injectEmptyRef(
   };
 }
 
-/** AUD-008: break the balance-sheet tie-out. */
-export function injectBalanceBreak(sheet: string, address: string, delta: number): Injector {
+/**
+ * AUD-008: break the balance-sheet tie-out. The assertion surfaces at the
+ * CHECK cell, not at the edit that broke it, so `checkCells` carries the
+ * addresses where the finding is expected to appear.
+ */
+export function injectBalanceBreak(
+  sheet: string,
+  address: string,
+  delta: number,
+  checkCells: string[]
+): Injector {
   return (workbook) => {
     const parsed = parseA1Range(address)!;
     const target = workbook.addSheet(sheet);
     const cell = target.get(parsed.startRow, parsed.startCol);
     const existing = cell?.formula ?? "=0";
     write(workbook, sheet, address, `${existing}+${delta}`);
+    const [primary, ...rest] = checkCells;
     return [
       {
         rule: "AUD-008",
-        address: `${sheet}!${address}`,
-        note: `balance assertion broken by ${delta}`,
+        address: `${sheet}!${primary}`,
+        alsoAcceptable: rest.map((cellAddress) => `${sheet}!${cellAddress}`),
+        // The edited cell now carries a literal and breaks its row's pattern,
+        // so AUD-001/AUD-002 firing there is correct, not a false positive.
+        collateral: [`${sheet}!${address}`],
+        note: `balance assertion broken by ${delta} at ${sheet}!${address}`,
       },
     ];
   };

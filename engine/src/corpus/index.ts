@@ -23,6 +23,7 @@ import {
   dcfModel,
   threeStatementModel,
 } from "./models";
+import { brokenBigDcf } from "./bigDcf";
 
 export const CORPUS_VERSION = 1;
 
@@ -90,7 +91,7 @@ export function buildCorpus(): CorpusWorkbook[] {
       threeStatementModel("x"),
       "broken-3s-balance",
       "3-statement with a balance sheet that no longer ties",
-      [injectBalanceBreak("BS", "D6", 1_500)]
+      [injectBalanceBreak("BS", "D6", 1_500, ["B9", "C9", "D9", "E9", "F9"])]
     )
   );
   corpus.push(
@@ -161,8 +162,12 @@ export function buildCorpus(): CorpusWorkbook[] {
     )
   );
 
+  // --- the Phase 2 gate fixture ----------------------------------------
+  corpus.push(brokenBigDcf());
+
   return corpus;
 }
 
 export * from "./models";
+export * from "./bigDcf";
 export * from "./defects";
