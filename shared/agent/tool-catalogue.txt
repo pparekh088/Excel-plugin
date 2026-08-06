@@ -1,0 +1,80 @@
+## inspection tools
+- workbook.map [risk=none] Return the Workbook Intelligence Layer summary: sheets, semantic regions, named inputs and outputs, key dependency chains, and coverage caveats. Start here — never ask for raw grids. Params: tokenBudget: optional number, default 6000.
+- worksheet.list [risk=none] List worksheets with visibility, protection state and used-range extent.
+- range.read [risk=none] Read values, formulas and/or number formats from a range. Chunked; refuses ranges over the cell budget. Formulas are en-US. Params: sheet: sheet name; a1: A1 range without sheet qualifier; include: array of values|formulas|numberFormats.
+- range.sample [risk=none] Sample n rows spread across a range instead of reading all of it — use for large data blocks where the shape matters more than every value. Params: sheet: sheet name; a1: A1 range; n: row count.
+- table.list [risk=none] List Excel tables with their ranges, columns and totals-row state.
+- name.list [risk=none] List defined names with scope and refersTo.
+- graph.trace [risk=none] Trace precedents or dependents of a cell to a given depth. Returns run-node addresses, not individual cells, so it stays readable on large models. Params: sheet: sheet name; a1: single cell; direction: precedents|dependents; depth: number, default 3.
+- graph.impact [risk=none] Everything downstream of a range: cells, blocks, named outputs, and charts or pivots on touched sheets. Reports opaque paths so the count is not mistaken for complete. Params: sheet: sheet name; a1: A1 range.
+- workbook.search [risk=none] Search formulas or values by pattern; returns addresses and matches. Params: pattern: string or regex; scope: formulas|values.
+- audit.run [risk=none] Run the deterministic audit engine (AUD-001..011) over the workbook or a sheet subset. Zero LLM calls. Returns findings, health score and coverage. Params: sheets: optional array; rules: optional array of rule ids.
+- chart.list [risk=none] List charts per sheet. LIMITATION: Chart source ranges are not always readable through the API.
+- pivot.list [risk=none] List pivot tables per sheet. LIMITATION: OLAP/PowerPivot pivots cannot be inspected or modified through Office.js. They are inventoried only; do not attempt to change them.
+- sheet.usedRange [risk=none] Used-range bounds for a sheet, without reading its contents. Params: sheet: sheet name.
+- cell.explain [risk=none] Everything known about one cell: formula, value, number format, its run node, direct precedents and dependents, and the semantic region it belongs to. Params: sheet: sheet name; a1: single cell.
+- region.list [risk=none] Semantic regions on a sheet (inputs, calculations, outputs, labels, time axes) with the reason each classification was made. Params: sheet: sheet name.
+- validation.list [risk=none] Data-validation rules on a range. Params: sheet: sheet name; a1: A1 range.
+- format.read [risk=none] Read formatting (fill, font, borders, alignment) for a range. Params: sheet: sheet name; a1: A1 range.
+- workbook.stats [risk=none] Counts only: sheets, cells, formulas, run nodes, edges, error cells, volatile and opaque nodes, cycles. Cheap orientation before deciding what to read.
+- graph.cycles [risk=none] List circular-reference groups, each verified at cell level so cascading fills are not misreported as cycles.
+- name.resolve [risk=none] Resolve a defined name (including names referring to other names) to the concrete ranges it covers. Params: name: defined name; scope: optional sheet.
+- conditionalFormat.list [risk=none] List conditional-format rules on a range, in priority order. Params: sheet: sheet name; a1: A1 range.
+- merge.list [risk=none] List merged cell areas on a sheet. Merges break many range operations, so check before writing into a region. Params: sheet: sheet name.
+- sheet.protection [risk=none] Report whether a sheet is protected, so a write can be refused with a clear message rather than failing silently. Params: sheet: sheet name.
+
+## mutation tools
+- range.write [risk=high] Write a 2D block of values. HIGH risk when the target is non-empty — the change set preview will show exactly what is overwritten. Params: sheet: sheet name; a1: A1 range; values: 2D array.
+- formula.set [risk=high] Set a formula, optionally filling down or right. Formulas must be en-US. Replacing an existing formula is HIGH risk; writing into empty cells is MEDIUM. Params: sheet: sheet name; a1: anchor cell; formula: en-US formula text; fillDown: optional row count; fillRight: optional column count.
+- range.clear [risk=high] Clear contents of a range. Always HIGH risk. Params: sheet: sheet name; a1: A1 range.
+- number_format.set [risk=low] Set the number format of a range. LOW risk — reversible and non-destructive. Params: sheet: sheet name; a1: A1 range; format: format string.
+- range.format [risk=low] Set fill, font, borders or alignment on a range. Params: sheet: sheet name; a1: A1 range; spec: format spec object.
+- sheet.create [risk=medium] Create a worksheet at an optional position. Params: name: new sheet name; position: optional index.
+- sheet.rename [risk=high] Rename a worksheet. HIGH risk: formulas referencing it by name update, but external references and non-formula references may break. Params: sheet: current name; newName: new name.
+- sheet.delete [risk=high] Delete a worksheet. HIGH risk and not reversible by rollback. Params: sheet: sheet name.
+- row.insert [risk=high] Insert rows, shifting content down. Formulas adjust; hardcoded ranges may not. Params: sheet: sheet name; at: row index; count: number of rows.
+- column.insert [risk=high] Insert columns, shifting content right. Params: sheet: sheet name; at: column index; count: number of columns.
+- row.delete [risk=high] Delete rows. HIGH risk: any formula referencing them yields #REF!. Params: sheet: sheet name; at: row index; count: number of rows.
+- column.delete [risk=high] Delete columns. HIGH risk: any formula referencing them yields #REF!. Params: sheet: sheet name; at: column index; count: number of columns.
+- table.create [risk=medium] Convert a range into an Excel table. Params: sheet: sheet name; a1: A1 range; hasHeaders: boolean; name: table name.
+- table.addColumn [risk=medium] Add a column to an existing table, optionally with a formula. Params: table: table name; name: column name; formula: optional en-US formula.
+- chart.create [risk=medium] Create a chart from a source range. Params: sheet: sheet name; a1: source range; chartType: type; title: optional.
+- chart.modify [risk=medium] Modify an existing chart's title, type or source range. Params: sheet: sheet name; name: chart name; spec: properties to change.
+- chart.delete [risk=high] Delete a chart. Not restored by rollback. Params: sheet: sheet name; name: chart name.
+- pivot.create [risk=medium] Create a PivotTable from a worksheet source range. Params: sourceSheet: sheet; sourceA1: range; targetSheet: sheet; targetA1: anchor. LIMITATION: Worksheet sources only. OLAP/PowerPivot pivots cannot be created or modified via Office.js — do not attempt.
+- pivot.addField [risk=medium] Add a field to a pivot's row, column, filter or data area. Params: pivot: pivot name; area: row|column|filter|data; field: field name; aggregation: sum|count|average|.... LIMITATION: Not available for OLAP pivots.
+- name.define [risk=medium] Define a workbook- or sheet-scoped name. Params: name: name; refersTo: en-US formula, e.g. =Sheet1!$B$2; scope: optional sheet.
+- validation.add [risk=low] Add a data-validation rule to a range. Params: sheet: sheet name; a1: A1 range; rule: validation rule spec.
+- conditionalFormat.add [risk=low] Add a conditional-format rule to a range. Params: sheet: sheet name; a1: A1 range; rule: conditional format spec. LIMITATION: Existing conditional-format stacks are not fully restorable by rollback; adding is safe, reordering is not.
+- range.copy [risk=high] Copy a range to a destination, translating relative references the way Excel does. HIGH risk when the destination is non-empty. Params: sheet: source sheet; a1: source range; targetSheet: destination sheet; targetA1: destination anchor; what: all|formulas|values|formats.
+- range.move [risk=high] Move a range, updating formulas that reference it. HIGH risk: references from other workbooks or through INDIRECT will not follow. Params: sheet: sheet; a1: range; targetSheet: sheet; targetA1: anchor.
+- sheet.reorder [risk=medium] Move a sheet to a new position. Note this changes which sheets a 3D reference spans. Params: sheet: sheet name; position: new index.
+- sheet.setVisibility [risk=medium] Show or hide a worksheet. Hidden sheets still calculate. Params: sheet: sheet name; visibility: visible|hidden|veryHidden.
+- column.setWidth [risk=low] Set column width, or autofit to contents. Params: sheet: sheet name; columns: A1 column range; width: number or 'autofit'.
+- row.setHeight [risk=low] Set row height, or autofit to contents. Params: sheet: sheet name; rows: A1 row range; height: number or 'autofit'.
+- comment.add [risk=low] Attach a comment to a cell — used to document an assumption rather than bury it in a formula. Params: sheet: sheet name; a1: single cell; text: comment text.
+- sort.apply [risk=high] Sort a range. HIGH risk: sorting a block whose formulas use relative references silently changes what they compute. Params: sheet: sheet name; a1: range; key: column index; order: asc|desc.
+- filter.apply [risk=medium] Apply an autofilter to a range or table. Params: sheet: sheet name; a1: range; criteria: filter criteria.
+- name.delete [risk=high] Delete a defined name. HIGH risk: every formula using it becomes #NAME?. Check graph.impact first. Params: name: defined name.
+
+## control tools
+- plan.propose [risk=none] Propose an ordered list of typed steps with a rationale for each. The user sees this before anything is executed. Params: steps: array of {tool, params, rationale}.
+- changeset.preview [risk=none] Compute the before/after diff, risk tier and downstream impact of the accumulated edits without applying anything.
+- changeset.apply [risk=none] Apply a previewed and approved change set atomically, with calculation suspended, after a drift check. Never partially applies. Params: changeSetId: id.
+- changeset.rollback [risk=none] Restore the snapshot taken before a change set was applied. Best-effort: reports exactly what it could not restore. Params: changeSetId: id.
+- calc.recalculate [risk=none] Recalculate the workbook or a scope. Params: scope: workbook|sheet; sheet: optional sheet name.
+- verify.balance [risk=none] Assert that a cell equals an expected value within a tolerance — used for tie-outs such as assets = liabilities + equity. Params: sheet: sheet name; a1: cell; expected: number; tolerance: number.
+- verify.run [risk=none] Run deterministic post-apply verification over the blast radius: new errors, plan-vs-actual reconciliation, new cycles, assertions, destroyed formulas. Params: changeSetId: id.
+- session.explain [risk=none] Produce the plain-language account of what was changed, why, and what it affects — written to chat and the _AI_Log sheet. Params: changeSetId: optional id.
+- session.cost [risk=none] Report tokens and cost consumed this session, per model.
+- changeset.abort [risk=none] Discard a proposed change set without applying it — used when the drift check fails or the user declines. Params: changeSetId: id; reason: why.
+- changeset.list [risk=none] List this session's change sets with status, risk and summary.
+- drift.check [risk=none] Re-read the cells a change set will touch and compare against the snapshot taken when it was proposed (INV-8). Run immediately before apply. Params: changeSetId: id.
+- log.write [risk=none] Append an entry to the _AI_Log sheet: what changed, why, and what it affects (INV-10). Params: changeSetId: id.
+
+## Not available
+- VBA or macro generation and execution — not supported, by design (§11).
+- Data Tables (what-if) — no Office.js API.
+- OLAP/PowerPivot pivot tables — cannot be inspected or modified; inventoried only.
+- Workbook-external links — readable as text, not resolvable; flagged by AUD-011.
+- Arbitrary code execution against the workbook — the agent emits typed tool calls only (INV-1).

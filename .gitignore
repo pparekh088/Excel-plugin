@@ -1,0 +1,28 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Env / secrets
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Office add-in dev certs (generated per machine)
+certs/
+
+# Redis runtime artifacts — never belong in source
+*.rdb
+dump.rdb

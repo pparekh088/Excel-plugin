@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "tools": {
+    "range.read": {
+      "access": "read",
+      "risk": "none",
+      "description": "Read values/formulas/number formats from a worksheet range. Chunked reads (max 10k cells per sync), refuses ranges larger than maxCells. Formulas are returned in en-US notation."
+    }
+  }
+}

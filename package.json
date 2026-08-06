@@ -1,0 +1,11 @@
+{
+  "name": "ledger",
+  "private": true,
+  "workspaces": ["engine", "addin"],
+  "scripts": {
+    "build": "npm run build -w engine && npm run build -w addin",
+    "test": "npm test -w engine && npm test -w addin",
+    "typecheck": "npm run typecheck -w engine && npm run typecheck -w addin",
+    "schemas": "npm run schemas -w engine"
+  }
+}
