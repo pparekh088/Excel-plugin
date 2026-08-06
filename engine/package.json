@@ -1,0 +1,26 @@
+{
+  "name": "ledger-engine",
+  "version": "0.0.1",
+  "description": "Ledger workbook engine: formula parser, dependency graph, WIL, audit rules, simulator, evals. Pure TypeScript, no DOM/Office dependencies.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "schemas": "tsx scripts/export-schemas.ts",
+    "corpus": "tsx scripts/generate-corpus.ts",
+    "eval:audit": "tsx scripts/eval-audit.ts",
+    "perf": "tsx scripts/perf-harness.ts",
+    "sim-server": "tsx scripts/sim-server.ts"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}
