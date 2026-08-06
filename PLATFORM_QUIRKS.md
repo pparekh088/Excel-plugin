@@ -58,3 +58,37 @@ Proxy objects accumulate per `Excel.run` unless released; long-lived loops
 over many ranges must call `untrack()` on ranges they are done with (we do,
 per chunk, in `rangeRead.ts`) or memory + sync latency grow unboundedly on
 web.
+
+## Q-008 · Merged cells: only the anchor is writable — status: reported
+
+Writing to a non-anchor cell of a merged area is **silently ignored** on some
+hosts rather than throwing. That is the worst failure mode available: the
+change set reports success and nothing happened. Consequence: hazard detection
+blocks any write to a non-anchor cell before the change set is applied
+(`engine/src/changeset/hazards.ts`). Repro to capture on a host: merge A1:D1,
+write to C1 via `range.values`, observe whether the value lands or is dropped.
+
+## Q-009 · Protected sheets: never unprotect on the user's behalf — status: reported
+
+Writes to a protected sheet throw. Office.js exposes `worksheet.protection`,
+so we detect it and refuse with a message telling the user to unprotect it. We
+deliberately do NOT call `protection.unprotect()` even when we could: silently
+removing a control someone put there is precisely the helpful-but-wrong action
+that destroys trust in an audit tool.
+
+## Q-010 · Table calculated columns fight direct writes — status: reported
+
+Writing a formula into one cell of a table's calculated column may propagate
+to the whole column or be reverted, depending on host and version. Treated as
+a warning rather than a block, with the user told to check the result. Repro:
+create a table with a formula column, write a different formula into one body
+cell, observe.
+
+## Q-011 · V8 heap readings overstate memory without a forced GC — status: observed
+
+Measuring `process.memoryUsage().heapUsed` right after building the graph over
+a 500k-formula workbook reported 885MB; forcing a GC first showed 213MB
+actually retained. The difference is transient parse trees awaiting
+collection. Any memory acceptance number must state whether it means retained
+or peak — we report both (`engine/scripts/perf-harness.ts`), and the budget is
+about retained. Reporting peak as retained would have produced a false failure.

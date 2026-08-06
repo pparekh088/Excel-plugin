@@ -70,8 +70,15 @@ export interface PivotDef {
   olap: boolean;
 }
 
+/**
+ * Excel is 16384 columns wide, so (row, col) packs losslessly into one number.
+ * Numeric keys rather than `"row,col"` strings: a 750k-cell workbook allocated
+ * roughly a third of a gigabyte in key strings alone before this changed.
+ */
+const COLUMN_STRIDE = 16_384;
+
 export class Sheet {
-  readonly cells = new Map<string, Cell>();
+  readonly cells = new Map<number, Cell>();
   /** Sheets hidden from the user still participate in calculation. */
   visible = true;
   protectedSheet = false;
@@ -83,8 +90,8 @@ export class Sheet {
     readonly index: number
   ) {}
 
-  static key(row: number, col: number): string {
-    return `${row},${col}`;
+  static key(row: number, col: number): number {
+    return row * COLUMN_STRIDE + col;
   }
 
   get(row: number, col: number): Cell | undefined {

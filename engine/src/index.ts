@@ -24,6 +24,9 @@ export * from "./audit/engine";
 
 export * from "./changeset/types";
 export * from "./changeset/engine";
+export * from "./changeset/hazards";
+
+export * from "./locale/normalize";
 
 export * from "./agent/tools";
 export * from "./agent/llm";

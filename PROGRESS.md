@@ -1,43 +1,95 @@
 # Progress
 
-## Phase 0 — Skeleton (current)
+All six phases (0–5) are implemented and their gates measured. Every gate that
+can be measured without Excel passes. The items that genuinely require a live
+Excel host are listed in **§ Sideload checklist** below and in each phase's
+gate report — they are the honest remainder, not hidden.
 
-Goal: sideloadable add-in (desktop + web) + FastAPI backend + hello-world
-tool round trip (`range.read`) through the validated envelope.
-Gate report: `docs/gates/phase-0.md`.
+## Test and gate summary
 
-| Item | Status |
-| --- | --- |
-| Repo layout (`addin/` + `server/` + `shared/schemas/`) | done |
-| FastAPI backend: sessions (Redis + in-memory), dev/Entra auth seam, healthz | done |
-| Tool-call envelope: validate params/result against generated JSON Schema (INV-1) | done |
-| Zod tool schemas source of truth + `npm run schemas` export | done |
-| `range.read` executor with chunked reads (INV-5) + unit-tested chunk planner | done |
-| Task pane UI: backend status, session, round-trip runner, offline degradation | done |
-| Manifest (desktop + web sideload) + placeholder icons | done |
-| Server tests (envelope, validation rejects, Redis store) | done |
-| In-container verification (pytest, vitest, tsc, webpack build, live HTTP round trip) | done — see gate report |
-| Sideload verification on real Excel desktop + web | **pending — needs a machine with Excel** |
-| Entra/NAA wiring with real app-registration IDs | pending (seam in place, D-006) |
+| Package | Tests | Typecheck | Lint |
+| --- | --- | --- | --- |
+| `engine/` | **1090** | clean | — |
+| `addin/` | **36** | clean | — |
+| `server/` | **56** | — | ruff clean |
 
-## Phase 1 — WIL + formula parser + eval scaffold (next)
+| Eval | Gate | Result |
+| --- | --- | --- |
+| `eval:audit` | precision ≥ 95% | **100%** precision, **100%** recall, 0 findings on 4 clean baselines |
+| `eval:edit` | success ≥ 85%, cells destroyed = 0 | **100%** (10/10), **0** destroyed |
+| `eval:aifn` | 5k drag under budget, re-run cache ≥ 60% | 5000 cells in **150** calls, **100%** cache hits on re-run |
+| `perf` (500k formulas) | < 30s, < 500MB | **19.1s**, **221MB** retained, 100× collapse |
 
-Not started. First moves: formula parser TDD harness + grammar corpus
-(500 cases), chunked bulk extraction, range-run collapsed DAG, WIL serializer,
-eval corpus v1 + headless runner.
+## Phase status
 
-## Phase 2 — Audit engine + read-only UI
+| Phase | Deliverable | Gate | State |
+| --- | --- | --- | --- |
+| 0 | Skeleton: add-in + FastAPI + validated tool envelope | works on desktop AND web | **code complete**, sideload verification open |
+| 1 | Formula parser, WIL, dependency graph, eval scaffold | §5 numbers; 500 parser tests | **pass** (713 parser tests) |
+| 2 | Audit engine AUD-001..011, read-only UI | ≥95% precision; broken 15-sheet DCF top-5; zero-LLM | **pass** (100% precision) |
+| 3 | Tool surface, change sets, agent runtime | edit success ≥85%; 0 destroyed; byte-identical rollback | **pass** (100%, 0, exact) |
+| 4 | AI.* functions, visualizer, cost dashboard | 5k drag under budget, cache ≥60% | **pass** |
+| 5 | Hardening: 500k stress, co-authoring, locale, telemetry | — | **pass** |
 
-Not started.
+## Sideload checklist — the honest remainder
 
-## Phase 3 — Agent + change sets
+None of these can be executed in a headless Linux container. They need Excel
+on Windows/Mac plus a browser for Excel web.
 
-Not started. (Envelope already designed for server-minted calls — D-004.)
+1. `npx office-addin-dev-certs install`, then `npm run dev-server`.
+2. Sideload `addin/manifest.xml` on **Excel desktop** (`npm run start:desktop`)
+   and on **Excel web** (Insert → Add-ins → Upload My Add-in).
+3. Task pane opens from the Home-tab **Ledger** button on both hosts.
+4. **Audit tab** on a real workbook: extraction completes, findings render,
+   **Trace** highlights the dependency chain *and* restores the original fill
+   exactly on Clear.
+5. **Tools tab** with the backend running: `range.read` round trip returns
+   values and formulas from a live sheet.
+6. Backend stopped → offline banner, audit still works (client-side).
+7. **Change set**: propose → preview → apply on a live workbook; verify
+   calculation suspension, batching, and `_AI_Log` sheet creation.
+8. **Drift**: edit a cell from a second session between preview and apply;
+   confirm the apply is refused and nothing is written.
+9. **Custom functions**: `=AI.CLASSIFY(...)` registers under the `AI`
+   namespace, batches, and returns `#AI_BUDGET!` past the budget.
+10. `office-addin-manifest validate` against Microsoft's service (blocked by
+    this container's egress proxy; XML well-formedness checked locally).
+11. **Precedent agreement** vs `getDirectPrecedents` on 100 random formula
+    cells (≥99%) — the headless equivalent is exact against a naive
+    reference implementation, but the Excel comparison is the stated gate.
+12. **Locale**: confirm `Range.formulas` is en-US on a de-DE host; record
+    findings in `PLATFORM_QUIRKS.md`.
+13. **Merged cells / protected sheets**: confirm whether Office.js throws or
+    silently ignores; record in `PLATFORM_QUIRKS.md`.
+14. Mac-specific: mixed content (https task pane → http backend), Q-005.
 
-## Phase 4 — AI custom functions + polish
+## Known gaps and deferred work
 
-Not started.
+- **Entra/NAA auth** is implemented but needs the org's real app-registration
+  IDs. Dev mode is guarded so it cannot reach production (D-006).
+- **AUD-012 model-risk judgment rules** are deferred (D-016). They are the only
+  LLM-assisted rules; shipping them earlier would have put a model dependency
+  inside the zero-LLM wedge.
+- **"Fix all safe issues"** is modelled (`safeAutoFixes`, risk tiers on every
+  rule) but not wired to a button (D-017). The change-set engine it needs now
+  exists, so this is a small piece of UI work.
+- **Change-set records and cost meters are in-process** on the server; they
+  move to Redis when the deployment target is multi-worker.
+- **Eval corpus is 18 workbooks**, not 30+ (D-014). Every audit rule has
+  labelled ground truth; growth should be driven by scored gaps.
+- **Model routing is the handoff's initial policy**, not an eval result.
+  Scoring real models per task class needs API keys; the seam is in place.
+- **Nightly Office.js integration tests** on a Windows VM via Playwright are
+  not set up — no such VM is available here.
+- **Icons are generated placeholders** (D-010).
 
-## Phase 5 — Hardening
+## Where things live
 
-Not started. `PLATFORM_QUIRKS.md` seeded with known traps to verify.
+```
+engine/   deterministic TypeScript: parser, graph, WIL, audit, change sets,
+          agent runtime, simulator, evals, corpus  (D-011)
+addin/    Office.js task pane, extraction, writer, highlighting, AI functions
+server/   FastAPI: sessions, auth, LLM gateway, change-set records, telemetry
+shared/   generated JSON Schemas — the cross-language tool contract
+docs/gates/  one report per phase, with measured numbers and open items
+```

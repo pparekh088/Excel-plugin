@@ -21,6 +21,7 @@ import {
   proposeChangeSet,
   rollback,
 } from "../changeset/engine";
+import { checkHazards, describeHazards } from "../changeset/hazards";
 import { ChangeSet, Edit, RollbackReport, isCellEdit } from "../changeset/types";
 import { DependencyGraph } from "../graph/graph";
 import { Workbook } from "../model/workbook";
@@ -72,6 +73,7 @@ export type RunOutcome =
   | "applied-with-warnings"
   | "rejected"
   | "aborted-drift"
+  | "blocked-hazard"
   | "rolled-back"
   | "plan-failed"
   | "no-op";
@@ -191,6 +193,23 @@ export async function runAgent(
     edits,
     graph,
   });
+
+  // ---- 4b. hazard pre-flight ------------------------------------------
+  // Protected sheets, merged cells and calculated columns make a write fail
+  // or, worse, silently do nothing. Catch them before anything is written.
+  const hazards = checkHazards(workbook, edits);
+  if (hazards.blocked) {
+    changeSet.status = "aborted";
+    changeSet.failureReason = describeHazards(hazards);
+    transcript.push(
+      `I cannot apply this safely:\n${describeHazards(hazards)}\n` +
+        `Nothing was written.`
+    );
+    return finish("blocked-hazard", { plan, changeSet });
+  }
+  if (hazards.hazards.length > 0) {
+    transcript.push(describeHazards(hazards));
+  }
 
   // ---- 5. change-set approval on the previewed diff --------------------
   const preview = explainChangeSet(changeSet);

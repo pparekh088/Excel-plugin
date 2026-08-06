@@ -27,7 +27,14 @@ export interface Run {
   cellCount: number;
 }
 
-const key = (row: number, col: number): string => `${row},${col}`;
+/**
+ * Numeric cell key. Excel is 16384 columns wide, so (row, col) packs into one
+ * number losslessly for every legal address. Strings here cost real memory at
+ * scale — a 500k-formula workbook allocated hundreds of megabytes of
+ * `"row,col"` keys before this changed.
+ */
+const COLUMN_STRIDE = 16_384;
+const key = (row: number, col: number): number => row * COLUMN_STRIDE + col;
 
 export function findRuns(cells: readonly RunCell[]): Run[] {
   const bySignature = new Map<string, RunCell[]>();

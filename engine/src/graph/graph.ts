@@ -74,6 +74,10 @@ export interface CellRef {
   col: number;
 }
 
+/** Excel is 16384 columns wide, so (row, col) packs losslessly into a number. */
+const COLUMN_STRIDE = 16_384;
+const packKey = (row: number, col: number): number => row * COLUMN_STRIDE + col;
+
 const EXCEL_ERRORS = new Set([
   "#REF!",
   "#VALUE!",
@@ -109,8 +113,11 @@ export class DependencyGraph {
   private readonly outgoing = new Map<number, Set<number>>();
   /** dependent -> precedents. */
   private readonly incoming = new Map<number, Set<number>>();
-  /** sheet -> "row,col" -> node id. */
-  private readonly cellToNode = new Map<string, Map<string, number>>();
+  /**
+   * sheet -> packed(row,col) -> node id. Numeric keys, not strings: at 500k
+   * formulas the string form cost hundreds of megabytes on its own.
+   */
+  private readonly cellToNode = new Map<string, Map<number, number>>();
   private readonly analyses = new Map<number, NodeAnalysis>();
   private readonly indexes = new Map<string, CellIndex>();
   /** Run nodes whose expanded references overlap themselves — verified later. */
@@ -152,15 +159,15 @@ export class DependencyGraph {
   private buildFormulaNodes(): void {
     for (const sheet of this.workbook.sheets) {
       const signatures: Array<{ row: number; col: number; signature: string }> = [];
-      const parsedByCell = new Map<string, { parse: ParseResult; refs: ExtractedRefs }>();
 
+      // Pass 1: signature only. The AST is discarded immediately — holding one
+      // per formula cell cost ~400MB on a 500k-formula workbook, and only the
+      // few thousand run ANCHORS ever need their tree again.
       for (const cell of sheet.cells.values()) {
         if (isErrorValue(cell.value)) this.stats.errorCells++;
         if (!isFormulaText(cell.formula)) continue;
         this.stats.formulaCells++;
         const parse = parseFormula(cell.formula);
-        const refs = extractRefs(parse.ast);
-        parsedByCell.set(`${cell.row},${cell.col}`, { parse, refs });
         // Unparsed formulas get their own signature so they never merge into
         // a neighbouring run and mask an inconsistency.
         const signature = parse.ok
@@ -172,8 +179,14 @@ export class DependencyGraph {
 
       const runs = findRuns(signatures);
       this.stats.runCount += runs.length;
+
+      // Pass 2: re-parse just the anchors. Cheap — one parse per run, not per
+      // cell — and it keeps peak memory proportional to run count.
       for (const run of runs) {
-        this.addFormulaNode(sheet, run, parsedByCell);
+        const anchor = sheet.get(run.startRow, run.startCol);
+        if (!isFormulaText(anchor?.formula)) continue;
+        const parse = parseFormula(anchor.formula);
+        this.addFormulaNode(sheet, run, { parse, refs: extractRefs(parse.ast) });
       }
     }
     this.stats.valueCells = this.workbook.cellCount - this.stats.formulaCells;
@@ -182,11 +195,10 @@ export class DependencyGraph {
   private addFormulaNode(
     sheet: Sheet,
     run: Run,
-    parsedByCell: Map<string, { parse: ParseResult; refs: ExtractedRefs }>
+    parsed: { parse: ParseResult; refs: ExtractedRefs }
   ): void {
     const anchor = sheet.get(run.startRow, run.startCol);
-    const parsed = parsedByCell.get(`${run.startRow},${run.startCol}`);
-    if (!anchor || !parsed) return;
+    if (!anchor) return;
 
     // Resolve against the run's full extent, not just its anchor: every cell
     // in a filled run reads its own shifted references (see resolve.ts).
@@ -245,7 +257,7 @@ export class DependencyGraph {
     if (!map) return;
     for (let row = node.startRow; row <= node.endRow; row++) {
       for (let col = node.startCol; col <= node.endCol; col++) {
-        map.set(`${row},${col}`, node.id);
+        map.set(packKey(row, col), node.id);
       }
     }
   }
@@ -254,7 +266,7 @@ export class DependencyGraph {
   private valueNodeAt(sheet: Sheet, row: number, col: number): number | null {
     const map = this.cellToNode.get(sheet.name.toUpperCase());
     if (!map) return null;
-    const existing = map.get(`${row},${col}`);
+    const existing = map.get(packKey(row, col));
     if (existing !== undefined) return existing;
 
     const cell = sheet.get(row, col);
@@ -299,7 +311,7 @@ export class DependencyGraph {
           area.endCol
         )) {
           const precedent =
-            this.cellToNode.get(sheet.name.toUpperCase())?.get(`${row},${col}`) ??
+            this.cellToNode.get(sheet.name.toUpperCase())?.get(packKey(row, col)) ??
             this.valueNodeAt(sheet, row, col);
           if (precedent === null || precedent === undefined) continue;
           if (precedent === node.id) {
@@ -338,7 +350,7 @@ export class DependencyGraph {
   }
 
   nodeAt(sheet: string, row: number, col: number): GraphNode | undefined {
-    const id = this.cellToNode.get(sheet.toUpperCase())?.get(`${row},${col}`);
+    const id = this.cellToNode.get(sheet.toUpperCase())?.get(packKey(row, col));
     return id === undefined ? undefined : this.nodes[id];
   }
 
@@ -402,7 +414,7 @@ export class DependencyGraph {
     if (map) {
       for (let row = startRow; row <= endRow; row++) {
         for (let col = startCol; col <= endCol; col++) {
-          const id = map.get(`${row},${col}`);
+          const id = map.get(packKey(row, col));
           if (id !== undefined) seeds.add(id);
         }
       }
@@ -528,7 +540,7 @@ export class DependencyGraph {
             )) {
               const owner = this.cellToNode
                 .get(target.name.toUpperCase())
-                ?.get(`${pRow},${pCol}`);
+                ?.get(packKey(pRow, pCol));
               // Only edges that stay inside the candidate component matter.
               if (owner === undefined || !inComponent.has(owner)) continue;
               precedents.push(`${target.name.toUpperCase()}!${pRow},${pCol}`);

@@ -398,6 +398,42 @@ describe("agent runtime loop", () => {
     expect(result.transcript.join(" ")).toContain("despite the warnings");
   });
 
+  it("refuses to write to a protected sheet, and says why", async () => {
+    const workbook = baseWorkbook();
+    workbook.sheet("S")!.protectedSheet = true;
+    const provider = new MockLlmProvider().script(
+      "INTENT",
+      planJson([{ tool: "formula.set", params: { sheet: "S", a1: "C1", formula: "=B1+1" } }])
+    );
+    const result = await runAgent(workbook, {
+      intent: "add a column",
+      provider,
+      approver: approveAll,
+      executor: createDefaultExecutor(),
+    });
+    expect(result.outcome).toBe("blocked-hazard");
+    expect(result.transcript.join(" ")).toContain("Unprotect it");
+    // Nothing was written.
+    expect(workbook.sheet("S")!.get(0, 2)).toBeUndefined();
+  });
+
+  it("refuses to write into a merged area's non-anchor cell", async () => {
+    const workbook = baseWorkbook();
+    workbook.sheet("S")!.merged = [[0, 2, 0, 5]];
+    const provider = new MockLlmProvider().script(
+      "INTENT",
+      planJson([{ tool: "formula.set", params: { sheet: "S", a1: "D1", formula: "=B1+1" } }])
+    );
+    const result = await runAgent(workbook, {
+      intent: "write into the merged block",
+      provider,
+      approver: approveAll,
+      executor: createDefaultExecutor(),
+    });
+    expect(result.outcome).toBe("blocked-hazard");
+    expect(result.transcript.join(" ")).toContain("silently ignored");
+  });
+
   it("reports a no-op when the plan produces no edits", async () => {
     const provider = new MockLlmProvider().script("INTENT", planJson([{ tool: "audit.run", params: {} }]));
     const result = await runAgent(baseWorkbook(), {
