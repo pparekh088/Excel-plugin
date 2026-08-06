@@ -92,3 +92,22 @@ actually retained. The difference is transient parse trees awaiting
 collection. Any memory acceptance number must state whether it means retained
 or peak — we report both (`engine/scripts/perf-harness.ts`), and the budget is
 about retained. Reporting peak as retained would have produced a false failure.
+
+## Q-012 · Post-apply state has to be re-read, not assumed — status: designed around
+
+Rollback compares the live cell against what we wrote (D-026), which means we
+need to know what Excel actually stored — not what we sent it. Excel coerces on
+write: a string that parses as a date becomes a serial, `=SUM(A:A)` may come
+back with implicit-intersection markers, and a formula written into a table's
+calculated column may be rewritten entirely (Q-010). Assuming the edit's payload
+*is* the post-apply state would make every one of those look like a human edit
+and block a legitimate rollback.
+
+So `applyChangeSet` re-reads the touched cells after the write and stores that
+(`captureLiveAppliedState`). Costs one extra batched sync per apply. The
+simulator has no coercion and records the state inline in `applyToWorkbook`.
+
+Not yet verified on a live host: whether the re-read observes a cell the user is
+*currently* editing in the formula bar but has not committed. If Excel reports
+the pre-edit value there, the user's in-flight edit would be restored over on
+rollback. On the sideload checklist as item 8b.

@@ -200,3 +200,52 @@ escalating from info to medium when a generated value feeds downstream
 calculations. Putting it in the audit report rather than a separate panel means
 it lands in front of the person signing off on the model, which is who §8 says
 demands it. It uses zero LLM calls, so the zero-LLM demo still holds.
+
+## D-025 · The system role is server-owned; workbook content is fenced data (2026-08-06)
+
+The planner used to build its system prompt from a client-supplied tool
+catalogue plus the WIL. Both are attacker-reachable — the WIL is generated
+*from* the workbook, so every sheet name, defined name, comment and string
+literal in it is content somebody else may have written — and putting them in
+the system role hands the highest-trust position to the least-trusted input.
+
+The system prompt and tool catalogue are now constants the server and engine
+own; supplying either over the wire is a 422. Workbook content travels in a
+user turn inside a `<workbook_context>` fence, with fence delimiters stripped
+from the content first so it cannot close its own fence. The user's intent goes
+last, so the most recent instruction the model reads is the user's.
+
+This is a boundary, not a filter. It does not make injection impossible — a
+sufficiently persuasive payload inside the fence may still steer a plan. What
+it guarantees is that steering a plan is all it can do: the model can only emit
+typed tool calls, and every mutation still goes through preview and approval.
+That layering is the actual defence; the fence just removes the free win.
+
+## D-026 · Rollback yields to a human edit rather than winning (2026-08-06)
+
+Rollback used to restore the snapshot unconditionally. The failure mode: we
+write F27, the user fixes F27 by hand, our verification fails on some unrelated
+cell, the user accepts the rollback offer, and their fix is gone. The undo of
+our mistake destroys their work — the single most damaging thing this system
+could do, and it looked like correct behaviour from inside the code.
+
+Change sets now record `appliedState`: what each cell held immediately after we
+wrote it. Rollback compares live against that, using the same rule as drift
+detection (formula for formula cells, value for constants, so a recalculation
+is never mistaken for an edit). A cell that still matches is provably ours and
+is restored; a cell that differs is somebody's newer work and is left exactly
+as it is, reported as a `RollbackConflict` naming what we wrote and what is
+there now. Missing `appliedState` is treated as a conflict too — absent
+evidence is not evidence of safety.
+
+`force` restores over a conflict, and exists solely to serve an explicit user
+decision made with the conflict list in front of them. Nothing in the agent
+loop sets it.
+
+Two honest limits. First, this is post-apply protection only: we detect that a
+cell changed, not who changed it, so an edit made by a *second* Ledger session
+reads as a human edit and is likewise left alone (which is the safe direction).
+Second, a conflict means the rollback is genuinely partial — some of our change
+survives in the workbook — so `ok: true` on a report with conflicts means
+"completed as designed", not "the workbook is back to its prior state". The
+transcript says so in those words.

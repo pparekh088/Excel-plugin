@@ -14,7 +14,13 @@
  * half-changed.
  */
 
-import type { CellSnapshot, ChangeSet, Edit } from "ledger-engine";
+import type {
+  CellSnapshot,
+  ChangeSet,
+  Edit,
+  RollbackConflict,
+  RollbackOptions,
+} from "ledger-engine";
 import { isCellEdit } from "ledger-engine";
 
 export interface ApplyProgress {
@@ -151,6 +157,10 @@ export async function applyChangeSet(
       context.workbook.application.calculate(Excel.CalculationType.full);
       await context.sync();
     });
+    // Record what actually landed. Rollback compares the live cell against
+    // this to tell our write from a later human edit; without it, rollback
+    // has to refuse every cell.
+    changeSet.appliedState = await captureLiveAppliedState(changeSet);
   } catch (error) {
     // A partial write is worse than no write: put it back.
     const message = error instanceof Error ? error.message : String(error);
@@ -208,7 +218,176 @@ function applyStructural(context: Excel.RequestContext, edit: Edit): void {
   }
 }
 
-/** Restore cells from snapshots — the live-workbook half of rollback (INV-3). */
+/** One live cell as Excel currently reports it. */
+interface LiveCell {
+  value: unknown;
+  formula?: string;
+  numberFormat?: string;
+  absent: boolean;
+}
+
+/** Re-read the touched cells from the live workbook in one batched pass. */
+async function readTouchedCells(changeSet: ChangeSet): Promise<Map<string, LiveCell>> {
+  const live = new Map<string, LiveCell>();
+  await Excel.run(async (context) => {
+    const loaded: Array<{ snap: CellSnapshot; range: Excel.Range }> = [];
+    for (const snap of changeSet.snapshots) {
+      const sheet = context.workbook.worksheets.getItem(snap.sheet);
+      const range = sheet.getRangeByIndexes(snap.row, snap.col, 1, 1);
+      range.load(["values", "formulas", "numberFormat"]);
+      loaded.push({ snap, range });
+    }
+    await context.sync();
+
+    for (const { snap, range } of loaded) {
+      const value = (range.values as unknown[][])[0]?.[0] ?? null;
+      const rawFormula = (range.formulas as unknown[][])[0]?.[0];
+      const numberFormat = (range.numberFormat as unknown[][])[0]?.[0];
+      live.set(cellKey(snap.sheet, snap.row, snap.col), {
+        value: normalize(value),
+        ...(typeof rawFormula === "string" && rawFormula.startsWith("=")
+          ? { formula: rawFormula }
+          : {}),
+        ...(typeof numberFormat === "string" ? { numberFormat } : {}),
+        // Excel has no "absent" — an empty cell reads back as "".
+        absent: normalize(value) === null && typeof rawFormula !== "string",
+      });
+      range.untrack();
+    }
+  });
+  return live;
+}
+
+function cellKey(sheet: string, row: number, col: number): string {
+  return `${sheet.toUpperCase()}!${row},${col}`;
+}
+
+function liveAddress(sheet: string, row: number, col: number): string {
+  return `${sheet}!R${row + 1}C${col + 1}`;
+}
+
+/**
+ * Capture what the live workbook holds right after a successful apply.
+ *
+ * The simulator records this inside `applyToWorkbook`; the Office.js path
+ * writes through the real API, so it has to re-read to find out what Excel
+ * actually stored (coercions, autocorrect, implicit intersection).
+ */
+export async function captureLiveAppliedState(changeSet: ChangeSet): Promise<CellSnapshot[]> {
+  const live = await readTouchedCells(changeSet);
+  return changeSet.snapshots.map((snap) => {
+    const cell = live.get(cellKey(snap.sheet, snap.row, snap.col));
+    return {
+      sheet: snap.sheet,
+      row: snap.row,
+      col: snap.col,
+      value: (cell?.value ?? null) as CellSnapshot["value"],
+      ...(cell?.formula !== undefined ? { formula: cell.formula } : {}),
+      ...(cell?.numberFormat !== undefined ? { numberFormat: cell.numberFormat } : {}),
+      absent: cell?.absent ?? true,
+    };
+  });
+}
+
+export interface LiveRollbackReport {
+  restoredCells: number;
+  conflicts: RollbackConflict[];
+  unrestorable: string[];
+  ok: boolean;
+}
+
+/** Same rule as the engine: formulas for formula cells, values for constants. */
+function changedSinceApply(applied: CellSnapshot, current: LiveCell | undefined): boolean {
+  if (applied.absent !== (current?.absent ?? true)) return true;
+  if (applied.formula !== current?.formula) return true;
+  if (applied.formula === undefined && !Object.is(current?.value ?? null, normalize(applied.value))) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * User-initiated rollback against the live workbook (INV-3).
+ *
+ * Cells edited by a human after we applied are LEFT ALONE and reported as
+ * conflicts. Reverting somebody's newer work because our verification failed
+ * would be the most damaging thing this add-in could do. `force` exists only
+ * to serve an explicit decision the user made with the conflict list in front
+ * of them.
+ */
+export async function rollbackChangeSet(
+  changeSet: ChangeSet,
+  options: RollbackOptions = {}
+): Promise<LiveRollbackReport> {
+  const live = await readTouchedCells(changeSet);
+  const appliedByCell = new Map<string, CellSnapshot>();
+  for (const state of changeSet.appliedState ?? []) {
+    appliedByCell.set(cellKey(state.sheet, state.row, state.col), state);
+  }
+
+  const conflicts: RollbackConflict[] = [];
+  const restorable: CellSnapshot[] = [];
+
+  for (const snap of changeSet.snapshots) {
+    const key = cellKey(snap.sheet, snap.row, snap.col);
+    const current = live.get(key);
+    const applied = appliedByCell.get(key);
+    const currentState = {
+      value: (current?.value ?? null) as RollbackConflict["current"]["value"],
+      ...(current?.formula !== undefined ? { formula: current.formula } : {}),
+    };
+
+    // No post-apply state means we cannot prove the cell is still ours; the
+    // safe reading of missing evidence is "do not touch it".
+    if (!applied) {
+      conflicts.push({
+        address: liveAddress(snap.sheet, snap.row, snap.col),
+        reason:
+          "No post-apply state was recorded for this cell, so I cannot tell whether " +
+          "someone has edited it since. Left as-is.",
+        applied: { value: null },
+        current: currentState,
+      });
+      continue;
+    }
+
+    if (!options.force && changedSinceApply(applied, current)) {
+      conflicts.push({
+        address: liveAddress(snap.sheet, snap.row, snap.col),
+        reason: "Cell was edited after the AI change; your edit was kept.",
+        applied: {
+          value: applied.value,
+          ...(applied.formula !== undefined ? { formula: applied.formula } : {}),
+        },
+        current: currentState,
+      });
+      continue;
+    }
+    restorable.push(snap);
+  }
+
+  const restoredCells = restorable.length > 0 ? await restoreSnapshots(restorable) : 0;
+
+  const unrestorable: string[] = [];
+  for (const edit of changeSet.edits) {
+    if (isCellEdit(edit)) continue;
+    unrestorable.push(
+      `Structural change (${edit.kind}${edit.name ? ` "${edit.name}"` : ""}) is not reversed ` +
+        `by rollback; undo it by hand if unwanted.`
+    );
+  }
+
+  return { restoredCells, conflicts, unrestorable, ok: true };
+}
+
+/**
+ * Restore cells from snapshots UNCONDITIONALLY — the live-workbook half of
+ * rollback (INV-3).
+ *
+ * This does no conflict checking, so call it only where nobody can have edited
+ * in between: the immediate recovery from a failed partial write. Every
+ * user-initiated rollback must go through `rollbackChangeSet`.
+ */
 export async function restoreSnapshots(snapshots: CellSnapshot[]): Promise<number> {
   let restored = 0;
   await Excel.run(async (context) => {

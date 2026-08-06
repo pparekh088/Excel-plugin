@@ -109,7 +109,8 @@ These are not aspirations; they are enforced and tested.
   JSON Schema server-side.
 - **INV-2** No silent writes. Propose → preview → approve → apply → log.
   Trusted-session mode auto-approves only plans that are entirely LOW risk.
-- **INV-3** Snapshot before write; rollback reports what it cannot restore.
+- **INV-3** Snapshot before write; rollback reports what it cannot restore, and
+  refuses to overwrite a cell a human edited after we applied.
 - **INV-4** We build the dependency graph from our own parse, never
   `getPrecedents()`.
 - **INV-5** Chunked, budgeted I/O — ≤10k cells per sync, tracked objects
@@ -122,7 +123,7 @@ These are not aspirations; they are enforced and tested.
 
 ## Documentation
 
-- `DECISIONS.md` — 24 logged decisions and deviations, with reasoning
+- `DECISIONS.md` — 26 logged decisions and deviations, with reasoning
 - `PLATFORM_QUIRKS.md` — Office.js behaviour traps (product IP)
 - `PROGRESS.md` — status, gate results, sideload checklist, known gaps
 - `docs/gates/phase-{0..5}.md` — per-phase reports including what failed first

@@ -53,6 +53,7 @@ function makeRange(sheet: string, row: number, col: number) {
     untrack: vi.fn(),
     clear: vi.fn(() => {
       state.writes.push({ sheet, row, col, kind: "clear" });
+      state.reads.delete(key);
     }),
     select: vi.fn(),
   };
@@ -72,6 +73,18 @@ function makeRange(sheet: string, row: number, col: number) {
           kind: prop as RecordedWrite["kind"],
           payload: value,
         });
+        // A write is visible to the next read, as it would be in Excel.
+        const written = (value as unknown[][])[0]?.[0];
+        if (prop === "values") {
+          state.reads.set(key, { value: written });
+        } else if (prop === "formulas") {
+          state.reads.set(
+            key,
+            typeof written === "string" && written.startsWith("=")
+              ? { value: state.reads.get(key)?.value ?? null, formula: written }
+              : { value: written }
+          );
+        }
       }
       target[prop as string] = value;
       return true;
@@ -281,6 +294,80 @@ describe("applyChangeSet", () => {
     // The restore wrote the original formulas back.
     const restored = state.writes.filter((write) => write.payload && String(JSON.stringify(write.payload)).includes("+1"));
     expect(restored.length).toBeGreaterThan(0);
+  });
+});
+
+describe("live rollback does not destroy human edits (P0-2)", () => {
+  /** before = 10, we apply 20, a human changes it to 30. */
+  async function applyThenHumanEdits(humanValue: unknown) {
+    const { applyChangeSet } = await import("../src/excel/writer");
+    const workbook = new Workbook("test");
+    workbook.addSheet("S").set({ row: 26, col: 5, value: 10 });
+    state.reads.set("S!26,5", { value: 10 });
+
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "bump F27",
+      summary: "bump F27",
+      edits: [{ kind: "setValue", sheet: "S", row: 26, col: 5, value: 20 }],
+    });
+    // The fake makes writes visible to the next read, so the post-apply
+    // re-read sees the 20 we just wrote.
+    const applied = await applyChangeSet(changeSet);
+    expect(applied.ok).toBe(true);
+    expect(changeSet.appliedState?.[0]?.value).toBe(20);
+
+    // Now a human edits the same cell.
+    state.reads.set("S!26,5", { value: humanValue });
+    state.writes = [];
+    return changeSet;
+  }
+
+  it("leaves the human's value alone and reports a conflict", async () => {
+    const { rollbackChangeSet } = await import("../src/excel/writer");
+    const changeSet = await applyThenHumanEdits(30);
+
+    const report = await rollbackChangeSet(changeSet);
+    expect(report.restoredCells).toBe(0);
+    expect(state.writes).toHaveLength(0); // nothing written to the workbook
+    expect(report.conflicts).toHaveLength(1);
+    expect(report.conflicts[0]?.applied.value).toBe(20);
+    expect(report.conflicts[0]?.current.value).toBe(30);
+    expect(report.ok).toBe(true);
+  });
+
+  it("restores when the cell still holds what we wrote", async () => {
+    const { rollbackChangeSet } = await import("../src/excel/writer");
+    const changeSet = await applyThenHumanEdits(20); // unchanged since apply
+
+    const report = await rollbackChangeSet(changeSet);
+    expect(report.conflicts).toHaveLength(0);
+    expect(report.restoredCells).toBe(1);
+    expect(state.writes).toContainEqual(
+      expect.objectContaining({ sheet: "S", row: 26, col: 5, payload: [[10]] })
+    );
+  });
+
+  it("restores over a human edit only when forced", async () => {
+    const { rollbackChangeSet } = await import("../src/excel/writer");
+    const changeSet = await applyThenHumanEdits(30);
+
+    const report = await rollbackChangeSet(changeSet, { force: true });
+    expect(report.conflicts).toHaveLength(0);
+    expect(report.restoredCells).toBe(1);
+    expect(state.writes).toContainEqual(
+      expect.objectContaining({ sheet: "S", row: 26, col: 5, payload: [[10]] })
+    );
+  });
+
+  it("refuses every cell when no post-apply state was recorded", async () => {
+    const { rollbackChangeSet } = await import("../src/excel/writer");
+    const changeSet = await applyThenHumanEdits(20);
+    delete changeSet.appliedState;
+
+    const report = await rollbackChangeSet(changeSet);
+    expect(report.restoredCells).toBe(0);
+    expect(state.writes).toHaveLength(0);
+    expect(report.conflicts[0]?.reason).toContain("cannot tell");
   });
 });
 

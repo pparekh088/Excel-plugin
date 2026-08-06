@@ -22,7 +22,13 @@ import {
   rollback,
 } from "../changeset/engine";
 import { checkHazards, describeHazards } from "../changeset/hazards";
-import { ChangeSet, Edit, RollbackReport, isCellEdit } from "../changeset/types";
+import {
+  CellSnapshot,
+  ChangeSet,
+  Edit,
+  RollbackReport,
+  isCellEdit,
+} from "../changeset/types";
 import { DependencyGraph } from "../graph/graph";
 import { Workbook } from "../model/workbook";
 import type { CellAddr, Node as AstNode } from "../parser/ast";
@@ -389,8 +395,22 @@ export async function runAgent(
         `Rolled back ${report.restoredCells} cell(s).` +
           (report.unrestorable.length > 0
             ? ` Could NOT restore: ${report.unrestorable.join(" ")}`
-            : " Everything I changed was restored.")
+            : report.conflicts.length === 0
+              ? " Everything I changed was restored."
+              : "")
       );
+      if (report.conflicts.length > 0) {
+        transcript.push(
+          `${report.conflicts.length} cell(s) were edited after I applied, so I left them ` +
+            `exactly as they are rather than overwrite that work: ` +
+            report.conflicts
+              .slice(0, 8)
+              .map((conflict) => conflict.address)
+              .join(", ") +
+            (report.conflicts.length > 8 ? `, and ${report.conflicts.length - 8} more` : "") +
+            `. Undo them by hand if you want my change reverted there too.`
+        );
+      }
       return finish("rolled-back", {
         plan,
         changeSet,
@@ -422,10 +442,19 @@ function mergeChangeSets(original: ChangeSet, repair: ChangeSet): ChangeSet {
       known.add(key);
     }
   }
+  // Applied state is the opposite: the repair wrote LAST, so where both touched
+  // a cell the repair's post-apply state is the one rollback must compare
+  // against. Anything else would read our own repair as a human edit.
+  const appliedState = new Map<string, CellSnapshot>();
+  for (const state of [...(original.appliedState ?? []), ...(repair.appliedState ?? [])]) {
+    appliedState.set(`${state.sheet.toUpperCase()}!${state.row},${state.col}`, state);
+  }
+
   return {
     ...original,
     edits: [...original.edits, ...repair.edits],
     snapshots,
+    appliedState: [...appliedState.values()],
     diff: [...original.diff, ...repair.diff],
     impact: {
       affectedCells: original.impact.affectedCells + repair.impact.affectedCells,

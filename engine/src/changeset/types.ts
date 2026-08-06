@@ -119,7 +119,15 @@ export interface ChangeSet {
   edits: Edit[];
   risk: RiskTier;
   status: ChangeSetStatus;
+  /** State BEFORE we wrote — what rollback restores to. */
   snapshots: CellSnapshot[];
+  /**
+   * State immediately AFTER we wrote and recalculated. Rollback compares the
+   * live cell against this: if it still matches, our write is the most recent
+   * one and undoing it is safe. If it differs, a human has edited since, and
+   * their work must not be silently reverted.
+   */
+  appliedState?: CellSnapshot[];
   diff: DiffEntry[];
   impact: ImpactSummary;
   /** Set when the change set was aborted or failed. */
@@ -128,15 +136,36 @@ export interface ChangeSet {
   rolledBackAt?: string;
 }
 
+export interface RollbackConflict {
+  address: string;
+  reason: string;
+  /** What we wrote when the change set was applied. */
+  applied: { value: CellValue; formula?: string };
+  /** What is in the cell now — somebody else's work. */
+  current: { value: CellValue; formula?: string };
+}
+
 /** What rollback could and could not restore — INV-3 honesty requirement. */
 export interface RollbackReport {
   changeSetId: string;
   restoredCells: number;
   /** Things we know we cannot restore, stated plainly. */
   unrestorable: string[];
-  /** Cells that had drifted since apply and were left alone. */
-  skippedDueToDrift: string[];
+  /**
+   * Cells a human edited AFTER we applied. Rollback leaves these alone: the
+   * user's newer work outranks our undo, and silently reverting it would be
+   * the single most damaging thing this system could do.
+   */
+  conflicts: RollbackConflict[];
   ok: boolean;
+}
+
+export interface RollbackOptions {
+  /**
+   * Restore cells that changed after apply anyway. Only ever set from an
+   * explicit user decision made with the conflict list in front of them.
+   */
+  force?: boolean;
 }
 
 export interface DriftEntry {

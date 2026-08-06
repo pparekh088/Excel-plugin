@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeImpact,
   applyToWorkbook,
+  captureAppliedState,
   checkDrift,
   explainChangeSet,
   overallRisk,
@@ -318,6 +319,159 @@ describe("rollback fidelity (Phase 3 gate: byte-identical restore)", () => {
     const report = rollback(workbook, changeSet);
     expect(report.unrestorable.some((item) => item.includes("New"))).toBe(true);
     expect(report.unrestorable.some((item) => item.includes("pivot"))).toBe(true);
+  });
+});
+
+describe("rollback never destroys a human edit made after apply (P0-2)", () => {
+  /** The reviewer's scenario: before=10, we write 20, a human writes 30. */
+  function setUp() {
+    const workbook = workbookOf({ S: { F27: 10 } });
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "bump F27",
+      summary: "bump F27",
+      edits: [{ kind: "setValue", sheet: "S", row: 26, col: 5, value: 20 }],
+    });
+    applyToWorkbook(workbook, changeSet);
+    Simulator.of(workbook).recalculate();
+    expect(workbook.sheet("S")!.get(26, 5)!.value).toBe(20);
+
+    // The human edits the same cell after we applied.
+    workbook.sheet("S")!.set({ row: 26, col: 5, value: 30 });
+    return { workbook, changeSet };
+  }
+
+  it("keeps the human's value and reports a conflict", () => {
+    const { workbook, changeSet } = setUp();
+    const report = rollback(workbook, changeSet);
+
+    expect(workbook.sheet("S")!.get(26, 5)!.value).toBe(30);
+    expect(report.restoredCells).toBe(0);
+    expect(report.conflicts).toHaveLength(1);
+    expect(report.conflicts[0]!.address).toBe("S!F27");
+    expect(report.conflicts[0]!.applied.value).toBe(20);
+    expect(report.conflicts[0]!.current.value).toBe(30);
+    // Conflicts are a correct outcome, not a failed rollback.
+    expect(report.ok).toBe(true);
+  });
+
+  it("restores it only when the user explicitly forces the rollback", () => {
+    const { workbook, changeSet } = setUp();
+    const report = rollback(workbook, changeSet, { force: true });
+
+    expect(workbook.sheet("S")!.get(26, 5)!.value).toBe(10);
+    expect(report.restoredCells).toBe(1);
+    expect(report.conflicts).toHaveLength(0);
+  });
+
+  it("detects a human replacing our formula with their own", () => {
+    const workbook = workbookOf({ S: { A1: 5, B1: "=A1*2" } });
+    Simulator.of(workbook).recalculate();
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "x",
+      summary: "x",
+      edits: [{ kind: "setFormula", sheet: "S", row: 0, col: 1, formula: "=A1*3" }],
+    });
+    applyToWorkbook(workbook, changeSet);
+    Simulator.of(workbook).recalculate();
+
+    workbook.sheet("S")!.set({ row: 0, col: 1, value: 20, formula: "=A1*4" });
+    const report = rollback(workbook, changeSet);
+
+    expect(workbook.sheet("S")!.get(0, 1)!.formula).toBe("=A1*4");
+    expect(report.conflicts).toHaveLength(1);
+    expect(report.conflicts[0]!.applied.formula).toBe("=A1*3");
+    expect(report.conflicts[0]!.current.formula).toBe("=A1*4");
+  });
+
+  it("detects a human deleting a cell we created", () => {
+    const workbook = workbookOf({ S: { A1: 5 } });
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "x",
+      summary: "x",
+      edits: [{ kind: "setValue", sheet: "S", row: 9, col: 9, value: 1 }],
+    });
+    applyToWorkbook(workbook, changeSet);
+    workbook.sheet("S")!.delete(9, 9);
+
+    const report = rollback(workbook, changeSet);
+    expect(report.conflicts).toHaveLength(1);
+    expect(report.restoredCells).toBe(0);
+  });
+
+  it("does not mistake a recalculated value for a human edit", () => {
+    const workbook = workbookOf({ S: { A1: 5, B1: "=A1*2" } });
+    Simulator.of(workbook).recalculate();
+    const before = fingerprint(workbook);
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "x",
+      summary: "x",
+      edits: [{ kind: "setFormula", sheet: "S", row: 0, col: 1, formula: "=A1*3" }],
+    });
+    applyToWorkbook(workbook, changeSet);
+    // Recalculation moves B1's VALUE from 10 to 15 without anyone touching it.
+    Simulator.of(workbook).recalculate();
+    expect(workbook.sheet("S")!.get(0, 1)!.value).toBe(15);
+
+    const report = rollback(workbook, changeSet);
+    Simulator.of(workbook).recalculate();
+    expect(report.conflicts).toHaveLength(0);
+    expect(fingerprint(workbook)).toBe(before);
+  });
+
+  it("rolls back untouched cells and conflicts only on the edited one", () => {
+    const workbook = workbookOf({ S: { A1: 1, B1: 2, C1: 3 } });
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "x",
+      summary: "x",
+      edits: [
+        { kind: "setValue", sheet: "S", row: 0, col: 0, value: 10 },
+        { kind: "setValue", sheet: "S", row: 0, col: 1, value: 20 },
+        { kind: "setValue", sheet: "S", row: 0, col: 2, value: 30 },
+      ],
+    });
+    applyToWorkbook(workbook, changeSet);
+    workbook.sheet("S")!.set({ row: 0, col: 1, value: 999 });
+
+    const report = rollback(workbook, changeSet);
+    expect(workbook.sheet("S")!.get(0, 0)!.value).toBe(1);
+    expect(workbook.sheet("S")!.get(0, 1)!.value).toBe(999);
+    expect(workbook.sheet("S")!.get(0, 2)!.value).toBe(3);
+    expect(report.restoredCells).toBe(2);
+    expect(report.conflicts.map((conflict) => conflict.address)).toEqual(["S!B1"]);
+  });
+
+  it("refuses every cell when no post-apply state was recorded", () => {
+    const workbook = workbookOf({ S: { A1: 1 } });
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "x",
+      summary: "x",
+      edits: [{ kind: "setValue", sheet: "S", row: 0, col: 0, value: 2 }],
+    });
+    applyToWorkbook(workbook, changeSet);
+    // Simulate a change set that came back from storage without the evidence.
+    delete changeSet.appliedState;
+
+    const report = rollback(workbook, changeSet);
+    expect(workbook.sheet("S")!.get(0, 0)!.value).toBe(2);
+    expect(report.restoredCells).toBe(0);
+    expect(report.conflicts[0]!.reason).toContain("cannot tell");
+  });
+
+  it("captureAppliedState records what the cells hold now", () => {
+    const workbook = workbookOf({ S: { A1: 5, B1: "=A1*2" } });
+    const changeSet = proposeChangeSet(workbook, {
+      intent: "x",
+      summary: "x",
+      edits: [{ kind: "setFormula", sheet: "S", row: 0, col: 1, formula: "=A1*3" }],
+    });
+    applyToWorkbook(workbook, changeSet);
+    Simulator.of(workbook).recalculate();
+
+    const state = captureAppliedState(workbook, changeSet);
+    expect(state).toHaveLength(1);
+    expect(state[0]!.formula).toBe("=A1*3");
+    expect(state[0]!.value).toBe(15);
+    expect(state[0]!.absent).toBe(false);
   });
 });
 

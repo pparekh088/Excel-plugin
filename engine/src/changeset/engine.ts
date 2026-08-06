@@ -9,11 +9,13 @@
  */
 
 import { DependencyGraph } from "../graph/graph";
-import { Workbook, a1, fullAddress } from "../model/workbook";
+import { Cell, Workbook, a1, fullAddress } from "../model/workbook";
 import {
   CellEdit,
   CellSnapshot,
   ChangeSet,
+  RollbackConflict,
+  RollbackOptions,
   DiffEntry,
   DriftCheck,
   DriftEntry,
@@ -225,7 +227,13 @@ export function checkDrift(workbook: Workbook, changeSet: ChangeSet): DriftCheck
   return { clean: entries.length === 0, entries };
 }
 
-/** Apply the change set's edits to the in-memory model (simulator path). */
+/**
+ * Apply the change set's edits to the in-memory model (simulator path).
+ *
+ * Records `appliedState` as part of applying, so rollback can always tell our
+ * write from a later human edit. Recording it here rather than leaving it to
+ * the caller means the two can never drift apart.
+ */
 export function applyToWorkbook(workbook: Workbook, changeSet: ChangeSet): void {
   for (const edit of changeSet.edits) {
     if (isCellEdit(edit)) {
@@ -246,6 +254,7 @@ export function applyToWorkbook(workbook: Workbook, changeSet: ChangeSet): void 
         break;
     }
   }
+  changeSet.appliedState = captureAppliedState(workbook, changeSet);
 }
 
 function applyCellEdit(workbook: Workbook, edit: CellEdit): void {
@@ -290,14 +299,72 @@ function applyCellEdit(workbook: Workbook, edit: CellEdit): void {
 }
 
 /**
+ * Record what the cells hold immediately after applying. Rollback needs this to
+ * tell "nobody has touched this since" from "a human has edited it".
+ *
+ * `applyToWorkbook` calls this itself. Hosts that apply edits out of band —
+ * the Office.js writer, which pushes through the real Excel API — must call it
+ * on the re-read workbook once their write completes.
+ *
+ * Safe to call either side of a recalculation: the comparison in
+ * `changedSinceApply` looks at formulas for formula cells and values only for
+ * constants, and recalculation moves neither.
+ */
+export function captureAppliedState(workbook: Workbook, changeSet: ChangeSet): CellSnapshot[] {
+  return changeSet.snapshots.map((snap) => {
+    const cell = workbook.sheet(snap.sheet)?.get(snap.row, snap.col);
+    return {
+      sheet: snap.sheet,
+      row: snap.row,
+      col: snap.col,
+      value: cell?.value ?? null,
+      ...(cell?.formula !== undefined ? { formula: cell.formula } : {}),
+      ...(cell?.numberFormat !== undefined ? { numberFormat: cell.numberFormat } : {}),
+      absent: cell === undefined,
+    };
+  });
+}
+
+/**
+ * Has this cell changed since we applied? Uses the same rule as drift
+ * detection: a formula cell's VALUE moves on every recalculation, so only its
+ * formula counts; a constant cell's value is the thing to watch.
+ */
+function changedSinceApply(applied: CellSnapshot, current: Cell | undefined): boolean {
+  const isAbsent = current === undefined;
+  if (applied.absent !== isAbsent) return true;
+  if (applied.formula !== current?.formula) return true;
+  if (applied.formula === undefined && !Object.is(current?.value ?? null, applied.value)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Rollback from snapshots. Best-effort by design and honest about it:
  * structural edits and anything with host-side state we did not capture are
  * listed in `unrestorable` rather than silently skipped.
+ *
+ * Cells a human edited after we applied are NOT restored. Reverting somebody's
+ * newer work because our verification failed would be the most damaging thing
+ * this system could do, so those come back as conflicts for the user to decide
+ * on. `force` overrides, and exists only to serve an explicit user decision
+ * made with the conflict list in front of them.
  */
-export function rollback(workbook: Workbook, changeSet: ChangeSet): RollbackReport {
+export function rollback(
+  workbook: Workbook,
+  changeSet: ChangeSet,
+  options: RollbackOptions = {}
+): RollbackReport {
   const unrestorable: string[] = [];
-  const skippedDueToDrift: string[] = [];
+  const conflicts: RollbackConflict[] = [];
   let restoredCells = 0;
+
+  // Index the post-apply state so each cell can be checked in O(1).
+  const appliedByCell = new Map<string, CellSnapshot>();
+  for (const state of changeSet.appliedState ?? []) {
+    appliedByCell.set(`${state.sheet.toUpperCase()}!${state.row},${state.col}`, state);
+  }
 
   for (const edit of changeSet.edits) {
     if (isCellEdit(edit)) continue;
@@ -326,6 +393,44 @@ export function rollback(workbook: Workbook, changeSet: ChangeSet): RollbackRepo
       unrestorable.push(`Sheet "${snap.sheet}" no longer exists; ${a1(snap.row, snap.col)} skipped.`);
       continue;
     }
+
+    const current = sheet.get(snap.row, snap.col);
+    const applied = appliedByCell.get(`${snap.sheet.toUpperCase()}!${snap.row},${snap.col}`);
+
+    // No post-apply state recorded means we cannot prove the cell is still
+    // ours. Restoring anyway could silently revert somebody's work, so the
+    // safe reading of missing evidence is "do not touch it".
+    if (!applied) {
+      conflicts.push({
+        address: fullAddress(snap.sheet, snap.row, snap.col),
+        reason:
+          "No post-apply state was recorded for this cell, so I cannot tell whether " +
+          "someone has edited it since. Left as-is.",
+        applied: { value: null },
+        current: {
+          value: current?.value ?? null,
+          ...(current?.formula !== undefined ? { formula: current.formula } : {}),
+        },
+      });
+      continue;
+    }
+
+    if (!options.force && changedSinceApply(applied, current)) {
+      conflicts.push({
+        address: fullAddress(snap.sheet, snap.row, snap.col),
+        reason: "Cell was edited after the AI change; your edit was kept.",
+        applied: {
+          value: applied.value,
+          ...(applied.formula !== undefined ? { formula: applied.formula } : {}),
+        },
+        current: {
+          value: current?.value ?? null,
+          ...(current?.formula !== undefined ? { formula: current.formula } : {}),
+        },
+      });
+      continue;
+    }
+
     if (snap.absent) {
       sheet.delete(snap.row, snap.col);
       restoredCells++;
@@ -352,7 +457,9 @@ export function rollback(workbook: Workbook, changeSet: ChangeSet): RollbackRepo
     changeSetId: changeSet.id,
     restoredCells,
     unrestorable,
-    skippedDueToDrift,
+    conflicts,
+    // "ok" means the rollback completed as designed — conflicts are a correct
+    // outcome, not a failure. The caller reports them to the user.
     ok: true,
   };
 }

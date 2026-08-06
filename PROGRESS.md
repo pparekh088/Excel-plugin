@@ -27,7 +27,7 @@ gate report — they are the honest remainder, not hidden.
 | 0 | Skeleton: add-in + FastAPI + validated tool envelope | works on desktop AND web | **code complete**, sideload verification open |
 | 1 | Formula parser, WIL, dependency graph, eval scaffold | §5 numbers; 500 parser tests | **pass** (713 parser tests) |
 | 2 | Audit engine AUD-001..011, read-only UI | ≥95% precision; broken 15-sheet DCF top-5; zero-LLM | **pass** (100% precision) |
-| 3 | Tool surface, change sets, agent runtime | edit success ≥85%; 0 destroyed; byte-identical rollback | **pass** (100%, 0, exact) |
+| 3 | Tool surface, change sets, agent runtime | edit success ≥85%; 0 destroyed; byte-identical rollback | **pass** (100%, 0, exact on cells nobody edited after apply — see D-026) |
 | 4 | AI.* functions, visualizer, cost dashboard | 5k drag under budget, cache ≥60% | **pass** |
 | 5 | Hardening: 500k stress, co-authoring, locale, telemetry | — | **pass** |
 
@@ -50,6 +50,11 @@ on Windows/Mac plus a browser for Excel web.
    calculation suspension, batching, and `_AI_Log` sheet creation.
 8. **Drift**: edit a cell from a second session between preview and apply;
    confirm the apply is refused and nothing is written.
+8b. **Rollback conflict**: apply a change set, edit one of the written cells by
+   hand, then roll back. The hand-edited cell must keep the human value and be
+   reported as a conflict; the other cells must restore (D-026). The headless
+   equivalent passes against the Office.js fake; the live host is what proves
+   the re-read sees an uncommitted in-cell edit.
 9. **Custom functions**: `=AI.CLASSIFY(...)` registers under the `AI`
    namespace, batches, and returns `#AI_BUDGET!` past the budget.
 10. `office-addin-manifest validate` against Microsoft's service (blocked by
