@@ -77,3 +77,48 @@ stricter would reject real workbooks on day one.
 `addin/assets/icon-*.png` are programmatically generated (navy "L") so the
 manifest validates and sideload works. Replace with real brand assets before
 any pilot.
+
+## D-011 · Deterministic engine is a shared TypeScript package, not Python (2026-08-06)
+
+The handoff puts the Workbook Engine and Audit Engine in the FastAPI backend.
+We put them in `engine/` — a pure-TypeScript package with no DOM or Office
+dependencies — because three consumers need the same code and two of them are
+JavaScript: (a) the add-in, for client-side degraded mode when the backend is
+unreachable (§3 requires audit rules to still run), (b) the headless eval
+harness in CI, (c) the server, via a thin call-out when server-side analysis
+is wanted. Implementing the parser and audit rules twice would guarantee
+divergence between what the add-in flags offline and what the server flags
+online, which is precisely the trust-destroying bug for an audit product.
+The Python backend keeps sessions, auth, the LLM gateway, change-set storage,
+and the agent loop.
+
+## D-012 · Runs expand relative references; absolute references stay pinned (2026-08-06)
+
+A range-run node stands for many cells, so its dependency set must be the
+union of what those cells read. Relative bounds sweep with the fill, `$`-fixed
+bounds do not. Without this a filled row reports only its leftmost cell's
+precedents (see Phase 1 gate report). The union is a bounding box, which for a
+contiguous fill is exact.
+
+## D-013 · Cycle detection verifies candidates at cell level (2026-08-06)
+
+Because runs read their own range in cascading fills, node-level SCCs
+over-approximate. Tarjan produces candidates; each is verified against actual
+per-cell dependencies before being reported to a user as a circular reference.
+Cost is bounded by the candidate's size. A false "your model has a circular
+reference" is worse than a slightly slower audit.
+
+## D-014 · Eval corpus starts at 17 workbooks, not 30+ (2026-08-06)
+
+The gate asks for 30+. We ship 17 (4 clean baselines + 13 broken variants)
+that between them exercise every audit rule with labelled ground truth, and
+expand in Phase 2 where each addition can be scored rather than counted. Clean
+baselines matter as much as broken ones: any finding on a clean model is a
+false positive, which is how the ≥95% precision gate is actually enforced.
+
+## D-015 · The simulator reports what it cannot evaluate (2026-08-06)
+
+The headless evaluator implements the ~60 functions the corpus uses. Rather
+than returning 0 for anything else, unsupported functions yield `#NAME?` and
+are listed in `recalculate().unsupportedFunctions`, so an eval that outgrows
+the evaluator fails loudly instead of silently scoring against a wrong value.

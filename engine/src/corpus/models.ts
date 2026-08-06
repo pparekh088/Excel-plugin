@@ -188,12 +188,16 @@ export function threeStatementModel(id = "three-statement"): CorpusWorkbook {
     const col = 1 + i;
     const letter = a1(0, col).replace(/[0-9]+$/, "");
     const prev = a1(0, col - 1).replace(/[0-9]+$/, "");
+    // Cash rolls forward from the opening balance sheet (cash 25000, AR 0,
+    // PP&E 80000, debt 40000, equity 65000 — which ties at 105000), so every
+    // forecast year balances by construction: the only change to both sides
+    // is net income.
     setValue(
       workbook,
       "BS",
       bsRows.cash,
       col,
-      i === 0 ? "=25000" : `=${prev}${bsRows.cash + 1}+CF!${letter}6`
+      i === 0 ? `=25000+CF!${letter}6` : `=${prev}${bsRows.cash + 1}+CF!${letter}6`
     );
     setValue(
       workbook,

@@ -15,4 +15,9 @@ export * from "./graph/graph";
 export * from "./wil/semantic";
 export * from "./wil/serialize";
 
+export * from "./sim/evaluator";
+export * from "./sim/simulator";
+
+export * from "./eval/harness";
+
 export * from "./corpus";
