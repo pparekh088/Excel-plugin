@@ -17,6 +17,7 @@ import {
   tokens,
 } from "@fluentui/react-components";
 import { AuditPanel } from "./AuditPanel";
+import { CostPanel } from "./CostPanel";
 import { APP_NAME, PHASE, getBackendUrl } from "../config";
 import { createAuthProvider } from "../auth/provider";
 import { ApiError, LedgerClient, type Health } from "../api/client";
@@ -89,7 +90,7 @@ export function App({ hostReady }: Props) {
   const [include, setInclude] = useState<RangeReadInclude[]>(["values", "formulas"]);
   const [running, setRunning] = useState(false);
   const [output, setOutput] = useState<string>("");
-  const [tab, setTab] = useState<"audit" | "tools">("audit");
+  const [tab, setTab] = useState<"audit" | "tools" | "cost">("audit");
 
   const connect = useCallback(async () => {
     setBackend({ kind: "checking" });
@@ -151,12 +152,20 @@ export function App({ hostReady }: Props) {
         <Badge appearance="outline">{PHASE}</Badge>
       </div>
 
-      <TabList selectedValue={tab} onTabSelect={(_, data) => setTab(data.value as "audit" | "tools")}>
+      <TabList selectedValue={tab} onTabSelect={(_, data) => setTab(data.value as "audit" | "tools" | "cost")}>
         <Tab value="audit">Audit</Tab>
         <Tab value="tools">Tools</Tab>
+        <Tab value="cost">Cost</Tab>
       </TabList>
 
       {tab === "audit" && <AuditPanel hostReady={hostReady} />}
+
+      {tab === "cost" && (
+        <CostPanel
+          backendUrl={backendUrl}
+          sessionId={backend.kind === "online" ? backend.sessionId : null}
+        />
+      )}
 
       {tab === "tools" && (
         <>

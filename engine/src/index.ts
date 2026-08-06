@@ -14,10 +14,12 @@ export * from "./graph/graph";
 
 export * from "./wil/semantic";
 export * from "./wil/serialize";
+export * from "./wil/visualize";
 
 export * from "./audit/types";
 export * from "./audit/rules";
 export * from "./audit/balance";
+export * from "./audit/aiCells";
 export * from "./audit/engine";
 
 export * from "./changeset/types";
@@ -31,6 +33,9 @@ export * from "./agent/runtime";
 
 export * from "./sim/evaluator";
 export * from "./sim/simulator";
+
+export * from "./aifn/batch";
+export * from "./aifn/forecast";
 
 export * from "./eval/harness";
 

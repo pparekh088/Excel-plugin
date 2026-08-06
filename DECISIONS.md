@@ -176,3 +176,27 @@ every historical edit against the final state reported the superseded edit as
 a permanent plan mismatch, so the repair loop could never converge and every
 run ended in a rollback offer. The net effect of a change set is what the user
 approved and what must be verified.
+
+## D-022 · No streaming into cells for AI.* functions (2026-08-06)
+
+§8 mentions the custom-functions streaming pattern. None of the five functions
+we ship produce progressive output — they return one value — and streaming
+would complicate budget accounting (a partially-streamed result is neither
+cacheable nor countable) for no user-visible gain. Revisit if a long-running
+AI function is added.
+
+## D-023 · AI.FORECAST never touches a language model (2026-08-06)
+
+The forecast is Holt-Winters / Holt / simple exponential smoothing with
+parameters chosen by in-sample MAE, computed identically in the engine and the
+server. A generated number and a computed number are indistinguishable once
+they are in a cell, and in a financial model that is the difference between a
+forecast and a guess. A model may narrate the result; it may never produce it.
+
+## D-024 · AI-derived cells are an audit rule, not a UI badge (2026-08-06)
+
+AUD-013 inventories AI.* cells in the same report as every other finding,
+escalating from info to medium when a generated value feeds downstream
+calculations. Putting it in the audit report rather than a separate panel means
+it lands in front of the person signing off on the model, which is who §8 says
+demands it. It uses zero LLM calls, so the zero-LLM demo still holds.

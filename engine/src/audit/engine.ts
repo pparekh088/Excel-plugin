@@ -11,6 +11,7 @@ import { DependencyGraph } from "../graph/graph";
 import { Workbook } from "../model/workbook";
 import { SemanticMap, buildSemanticMap } from "../wil/semantic";
 import { checkBalanceAssertions, detectBalanceAssertions } from "./balance";
+import { AUD_013, resolveAiFindingPositions } from "./aiCells";
 import { DETERMINISTIC_RULES, Rule, RuleContext } from "./rules";
 import {
   AuditReport,
@@ -105,9 +106,10 @@ export function runAudit(workbook: Workbook, options: AuditOptions = {}): AuditR
   const semanticMap = options.semanticMap ?? buildSemanticMap(workbook, graph);
 
   const requested = options.rules;
-  const rules: Rule[] = DETERMINISTIC_RULES.filter(
-    (rule) => !requested || requested.includes(rule.id)
-  );
+  // AUD-013 inventories AI-derived values (§8). Deterministic: it reads
+  // formulas, it does not call a model.
+  const allRules = [...DETERMINISTIC_RULES, AUD_013];
+  const rules: Rule[] = allRules.filter((rule) => !requested || requested.includes(rule.id));
 
   const context: RuleContext = { workbook, graph, semanticMap };
   let findings: Finding[] = [];
@@ -146,6 +148,7 @@ export function runAudit(workbook: Workbook, options: AuditOptions = {}): AuditR
       a.col - b.col
   );
 
+  findings = resolveAiFindingPositions(findings, workbook);
   findings = dedupeByAddress(findings);
 
   const findingsBySeverity: Record<Severity, number> = {

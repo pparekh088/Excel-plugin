@@ -15,10 +15,15 @@ module.exports = async (env, options) => {
     entry: {
       taskpane: "./src/taskpane/index.tsx",
       commands: "./src/commands/commands.ts",
+      // Custom functions run in their own JS runtime (handoff §8).
+      functions: "./src/functions/functions.ts",
     },
     output: {
       path: path.resolve(__dirname, "dist"),
-      filename: "[name].[contenthash].js",
+      // The custom-functions bundle must keep a stable name: the manifest
+      // references it by URL and cannot follow a content hash.
+      filename: (pathData) =>
+        pathData.chunk?.name === "functions" ? "functions.js" : "[name].[contenthash].js",
       clean: true,
     },
     resolve: {
@@ -55,9 +60,15 @@ module.exports = async (env, options) => {
         template: "./src/commands/commands.html",
         chunks: ["commands"],
       }),
+      new HtmlWebpackPlugin({
+        filename: "functions.html",
+        template: "./src/functions/functions.html",
+        chunks: ["functions"],
+      }),
       new CopyWebpackPlugin({
         patterns: [
           { from: "assets/*", to: "assets/[name][ext]" },
+          { from: "src/functions/functions.json", to: "functions.json" },
           {
             from: "manifest.xml",
             to: "manifest.xml",

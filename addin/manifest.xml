@@ -32,6 +32,20 @@
         <Runtimes>
           <Runtime resid="Commands.Url" lifetime="long" />
         </Runtimes>
+        <AllFormFactors>
+          <ExtensionPoint xsi:type="CustomFunctions">
+            <Script>
+              <SourceLocation resid="Functions.Script.Url" />
+            </Script>
+            <Page>
+              <SourceLocation resid="Functions.Page.Url" />
+            </Page>
+            <Metadata>
+              <SourceLocation resid="Functions.Metadata.Url" />
+            </Metadata>
+            <Namespace resid="Functions.Namespace" />
+          </ExtensionPoint>
+        </AllFormFactors>
         <DesktopFormFactor>
           <GetStarted>
             <Title resid="GetStarted.Title" />
@@ -78,6 +92,9 @@
       </bt:Images>
       <bt:Urls>
         <bt:Url id="Commands.Url" DefaultValue="https://localhost:3000/commands.html" />
+        <bt:Url id="Functions.Script.Url" DefaultValue="https://localhost:3000/functions.js" />
+        <bt:Url id="Functions.Page.Url" DefaultValue="https://localhost:3000/functions.html" />
+        <bt:Url id="Functions.Metadata.Url" DefaultValue="https://localhost:3000/functions.json" />
         <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3000/taskpane.html" />
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://github.com/pparekh088/Excel-plugin" />
       </bt:Urls>
@@ -85,6 +102,7 @@
         <bt:String id="GetStarted.Title" DefaultValue="Ledger loaded" />
         <bt:String id="Group.Label" DefaultValue="Ledger" />
         <bt:String id="TaskpaneButton.Label" DefaultValue="Open Ledger" />
+        <bt:String id="Functions.Namespace" DefaultValue="AI" />
       </bt:ShortStrings>
       <bt:LongStrings>
         <bt:String id="GetStarted.Description" DefaultValue="Open the Ledger task pane from the Home tab." />

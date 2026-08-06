@@ -12,6 +12,7 @@
     "corpus": "tsx scripts/generate-corpus.ts",
     "eval:audit": "tsx scripts/eval-audit.ts",
     "eval:edit": "tsx scripts/eval-edit.ts",
+    "eval:aifn": "tsx scripts/eval-aifn.ts",
     "perf": "tsx scripts/perf-harness.ts",
     "sim-server": "tsx scripts/sim-server.ts"
   },
