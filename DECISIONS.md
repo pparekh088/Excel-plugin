@@ -289,3 +289,38 @@ writes is recovered by running inverses, and an inverse can itself fail (each
 one is caught and reported rather than stranding the rest). And a *guarded*
 inverse that refuses is a genuinely partial rollback — the report names what
 stayed and why, rather than counting it as restored.
+
+## D-028 · A repair inherits the approval it stays inside (2026-08-06)
+
+The repair loop was the one place a write reached the workbook without the
+user seeing it. Verification fails, the model proposes a corrective plan, the
+plan is applied — up to three times, to any cell, at any risk tier. INV-2 says
+no silent writes, and a repair is exactly when that matters most: a repair only
+happens because the agent has already got something wrong.
+
+Two obvious policies are both wrong. Approving every repair individually turns
+the ordinary case — "the formula I just wrote needs a small correction" — into
+a dialog the user learns to click through, which is how approval fatigue
+destroys the value of asking at all. Approving none lets a failed verification
+become a licence to edit anywhere.
+
+So the boundary is scope, not count. The user approved a specific set of cells
+at a specific risk tier. A repair confined to those cells, at no more risk than
+they accepted, is finishing the job they said yes to and applies without
+asking. A repair that reaches a cell outside that set, makes any structural
+change, or escalates the risk tier goes back to them with the reasons named.
+Rejecting leaves the workbook as it is and the usual rollback offer follows.
+
+`classifyRepair` is pure and deterministic — the decision is computed from the
+two change sets, never asked of the model. A boundary a model could talk its
+way past would be decorative.
+
+One subtlety that took a bug to find. Risk must be judged against the state the
+user was SHOWN, not against the live workbook: once our change is applied,
+every correction to our own formula reads as "overwriting existing logic" and
+scores high, so every repair would escalate and the policy would collapse into
+"always ask". `riskOf` now takes an optional prior-state map, and the repair
+classifier passes the approved change set's snapshots.
+
+There is deliberately no "never ask" setting. `repairApproval: "always"` exists
+for callers who want every fix confirmed; the in-scope default is the floor.

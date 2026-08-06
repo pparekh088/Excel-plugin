@@ -32,6 +32,7 @@ export * from "./locale/normalize";
 export * from "./agent/tools";
 export * from "./agent/llm";
 export * from "./agent/plan";
+export * from "./agent/repairScope";
 export * from "./agent/verify";
 export * from "./agent/runtime";
 

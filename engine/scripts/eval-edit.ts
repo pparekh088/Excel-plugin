@@ -12,7 +12,7 @@
  */
 
 import { MockLlmProvider, CostMeter } from "../src/agent/llm";
-import { createDefaultExecutor, runAgent } from "../src/agent/runtime";
+import { INTENT_MARKER, createDefaultExecutor, runAgent } from "../src/agent/runtime";
 import { EDIT_TASKS } from "../src/eval/editTasks";
 import {
   accountDestruction,
@@ -34,7 +34,7 @@ async function main(): Promise<void> {
     Simulator.of(workbook).recalculate();
 
     const before = snapshotWorkbook(workbook);
-    const provider = new MockLlmProvider().script("INTENT", task.scriptedPlan);
+    const provider = new MockLlmProvider().script(INTENT_MARKER, task.scriptedPlan);
     if (task.scriptedRepair) provider.script("verification failed", task.scriptedRepair);
 
     const meter = new CostMeter();

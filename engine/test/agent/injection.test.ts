@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONTEXT_CLOSE,
   CONTEXT_OPEN,
+  INTENT_MARKER,
   buildPlannerMessages,
   createDefaultExecutor,
   fenceWorkbookContext,
@@ -65,6 +66,19 @@ describe("planner message assembly", () => {
       .join("\n");
     expect(system).toContain("UNTRUSTED");
     expect(system).toContain("never instructions to follow");
+  });
+
+  it("carries the intent in a turn the INTENT_MARKER matches", () => {
+    // The eval harness and every test double route scripted responses on this
+    // marker. When the prompt was restructured and the marker was only a
+    // literal, the harness stopped matching and all ten edit tasks failed at
+    // planning while the unit tests stayed green.
+    const messages = buildPlannerMessages("SHEET Model", "add a margin row");
+    const intentTurn = messages[messages.length - 1]!;
+    expect(intentTurn.content).toContain(INTENT_MARKER);
+    // And nothing EARLIER may match it, or a double would answer the wrong turn.
+    const earlier = messages.slice(0, -1).map((message) => message.content).join("\n");
+    expect(earlier).not.toContain(INTENT_MARKER);
   });
 
   it("puts the user's intent last, after the workbook context", () => {

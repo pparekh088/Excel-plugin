@@ -40,7 +40,22 @@ export function newChangeSetId(): string {
  *   MEDIUM new sheets, formulas written into empty cells
  *   HIGH   overwriting non-empty cells, deleting anything, changing existing formulas
  */
-export function riskOf(edit: Edit, workbook: Workbook): RiskTier {
+/**
+ * Prior state to judge risk against, keyed "SHEET!row,col".
+ *
+ * Risk is a statement about what an edit DESTROYS, so it has to be measured
+ * against the state the user was shown. Once a change set is applied, judging
+ * a follow-up edit against the live workbook measures it against our own
+ * write — which makes every correction to our own formula look like
+ * "overwriting existing logic".
+ */
+export type PriorState = Map<string, CellSnapshot>;
+
+export function priorStateKey(sheet: string, row: number, col: number): string {
+  return `${sheet.toUpperCase()}!${row},${col}`;
+}
+
+export function riskOf(edit: Edit, workbook: Workbook, prior?: PriorState): RiskTier {
   if (!isCellEdit(edit)) {
     // Structural: creating things is medium, renaming existing things is high.
     return edit.kind === "renameSheet" ? "high" : "medium";
@@ -48,17 +63,27 @@ export function riskOf(edit: Edit, workbook: Workbook): RiskTier {
   if (edit.kind === "setNumberFormat") return "low";
   if (edit.kind === "clear") return "high";
 
-  const existing = workbook.sheet(edit.sheet)?.get(edit.row, edit.col);
+  const snapshot = prior?.get(priorStateKey(edit.sheet, edit.row, edit.col));
+  const existing = snapshot
+    ? snapshot.absent
+      ? undefined
+      : {
+          row: edit.row,
+          col: edit.col,
+          value: snapshot.value,
+          ...(snapshot.formula !== undefined ? { formula: snapshot.formula } : {}),
+        }
+    : workbook.sheet(edit.sheet)?.get(edit.row, edit.col);
   const occupied = existing !== undefined && existing.value !== null && existing.value !== "";
   if (existing?.formula !== undefined) return "high"; // changing existing logic
   if (occupied) return "high"; // overwriting data
   return "medium"; // writing into an empty cell
 }
 
-export function overallRisk(edits: Edit[], workbook: Workbook): RiskTier {
+export function overallRisk(edits: Edit[], workbook: Workbook, prior?: PriorState): RiskTier {
   let risk: RiskTier = "low";
   for (const edit of edits) {
-    const tier = riskOf(edit, workbook);
+    const tier = riskOf(edit, workbook, prior);
     if (tier === "high") return "high";
     if (tier === "medium") risk = "medium";
   }
