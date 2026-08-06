@@ -14,12 +14,16 @@
  * destruction, and it is a hard failure regardless of task success.
  */
 
+import { TaskClass } from "../agent/llm";
 import { CellValue, Workbook } from "../model/workbook";
 import { Simulator } from "../sim/simulator";
 
-export type TaskClass = "audit" | "edit" | "build" | "analyze" | "explain";
+// Canonical homes: TaskClass in agent/llm, cell snapshots in changeset/types.
+// The eval harness records an address alongside each snapshot, so it keeps its
+// own shape and re-uses the task classes rather than redefining them.
+export type { TaskClass };
 
-export interface CellSnapshot {
+export interface EvalCellSnapshot {
   address: string;
   value: CellValue;
   formula?: string;
@@ -27,8 +31,8 @@ export interface CellSnapshot {
 }
 
 /** Full snapshot of a workbook's cells — the basis for destruction accounting. */
-export function snapshotWorkbook(workbook: Workbook): Map<string, CellSnapshot> {
-  const out = new Map<string, CellSnapshot>();
+export function snapshotWorkbook(workbook: Workbook): Map<string, EvalCellSnapshot> {
+  const out = new Map<string, EvalCellSnapshot>();
   for (const sheet of workbook.sheets) {
     for (const cell of sheet.cells.values()) {
       const address = `${sheet.name}!${cell.row},${cell.col}`;
@@ -56,7 +60,7 @@ export interface DestructionReport {
  * an expected change. Value-only edits to constants are not destruction.
  */
 export function accountDestruction(
-  before: Map<string, CellSnapshot>,
+  before: Map<string, EvalCellSnapshot>,
   after: Workbook,
   allowed: Set<string>
 ): DestructionReport {

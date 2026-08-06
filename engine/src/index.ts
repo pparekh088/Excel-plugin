@@ -20,6 +20,15 @@ export * from "./audit/rules";
 export * from "./audit/balance";
 export * from "./audit/engine";
 
+export * from "./changeset/types";
+export * from "./changeset/engine";
+
+export * from "./agent/tools";
+export * from "./agent/llm";
+export * from "./agent/plan";
+export * from "./agent/verify";
+export * from "./agent/runtime";
+
 export * from "./sim/evaluator";
 export * from "./sim/simulator";
 
